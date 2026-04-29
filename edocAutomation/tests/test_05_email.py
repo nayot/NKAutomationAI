@@ -6,14 +6,14 @@ Verify the email arrives and the HTML renders correctly.
 
 Run:
     pytest tests/test_05_email.py -v
-    (requires GMAIL_FROM, GMAIL_APP_PASSWORD, NOTIFY_EMAIL in .secrets)
+    (requires GMAIL_FROM, GMAIL_APP_PASSWORD, NOTIFY_EMAIL in .env)
 """
 import os
 import pytest
 from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv(Path(__file__).parent.parent / ".secrets")
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 from src.models import Document, Recommendation
 from src.email_sender import send_summary, build_html

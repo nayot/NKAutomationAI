@@ -16,7 +16,7 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / ".secrets")
+load_dotenv(Path(__file__).parent / ".env")
 
 from src.edoc_client import EdocClient, TARGET_SUB_INBOXES
 from src.ai_analyzer import AiAnalyzer

@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 uv sync
 uv run playwright install chromium
-cp .secrets.example .secrets   # then fill in real values
+cp .env.example .env   # then fill in real values
 ```
 
 All commands below use `uv run` to execute within the managed environment.
@@ -15,7 +15,7 @@ All commands below use `uv run` to execute within the managed environment.
 ## Commands
 
 ```bash
-# Run all tests (secrets-dependent tests auto-skip if .secrets is incomplete)
+# Run all tests (secrets-dependent tests auto-skip if .env is incomplete)
 uv run pytest tests/ -v
 
 # Run a single test file
@@ -82,4 +82,4 @@ When implementing `get_inbox_items()`, `get_document_detail()`, or `submit_order
 
 ## Secrets
 
-All secrets are loaded from `.secrets` (dotenv format, gitignored). See `.secrets.example` for required keys. `APPROVAL_SECRET` is optional — auto-generated per-run if absent (tokens won't survive server restarts without it set explicitly).
+All secrets are loaded from `.env` (dotenv format, gitignored). See `.env.example` for required keys. `APPROVAL_SECRET` is optional — auto-generated per-run if absent (tokens won't survive server restarts without it set explicitly).

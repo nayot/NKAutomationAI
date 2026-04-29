@@ -5,14 +5,14 @@ Verifies the Claude-based triage logic with real and mock documents.
 
 Run:
     pytest tests/test_04_ai_analyze.py -v
-    (requires ANTHROPIC_API_KEY in .secrets)
+    (requires ANTHROPIC_API_KEY in .env)
 """
 import os
 import pytest
 from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv(Path(__file__).parent.parent / ".secrets")
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 from src.models import Document
 from src.ai_analyzer import AiAnalyzer
@@ -33,7 +33,7 @@ def _make_doc(subject: str, note: str, inbox: str = "หนังสือเข
 def analyzer():
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        pytest.skip("ANTHROPIC_API_KEY not set in .secrets")
+        pytest.skip("ANTHROPIC_API_KEY not set in .env")
     return AiAnalyzer(api_key=api_key)
 
 

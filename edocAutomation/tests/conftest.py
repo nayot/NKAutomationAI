@@ -10,8 +10,8 @@ from dotenv import load_dotenv
 # Make src importable from tests/
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Load .secrets from project root
-load_dotenv(Path(__file__).parent.parent / ".secrets")
+# Load .env from project root
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 
 def secrets() -> dict:
@@ -19,7 +19,7 @@ def secrets() -> dict:
     required = ["EDOC_USERNAME", "EDOC_PASSWORD"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
-        pytest.skip(f"Missing secrets: {', '.join(missing)}. Copy .secrets.example → .secrets and fill in values.")
+        pytest.skip(f"Missing secrets: {', '.join(missing)}. Copy .env.example → .env and fill in values.")
     return {k: os.environ[k] for k in required}
 
 
