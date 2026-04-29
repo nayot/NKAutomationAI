@@ -1,0 +1,13 @@
+.secrets
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+screenshots/*.png
+/tmp/edoc_pending.json
+.venv/
+venv/
+.venv*/
+*.egg-info/
+dist/
+build/
