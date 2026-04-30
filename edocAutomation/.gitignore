@@ -1,13 +1,16 @@
+# Environment
 .env
+
+# Python
+.venv/
 __pycache__/
 *.pyc
 *.pyo
-.pytest_cache/
-screenshots/*.png
-/tmp/edoc_pending.json
-.venv/
-venv/
-.venv*/
-*.egg-info/
-dist/
-build/
+
+# Runtime data
+documents_data.json
+approved_order.json
+signing_history.json
+edoc_automation.log
+ai_response_raw.txt
+screenshots/

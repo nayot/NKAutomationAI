@@ -1,85 +1,190 @@
-# CLAUDE.md
+# CLAUDE.md — eDocAutomation Project
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Goal
+Automate document review and signing on the BUU e-Document system at https://doc.buu.ac.th/docweb
+using Playwright (Python, async). The automation should read each document, suggest a signing order
+based on content analysis, and require explicit human approval before executing any signature action.
 
-## Setup
+---
 
-```bash
-uv sync
-uv run playwright install chromium
-cp .env.example .env   # then fill in real values
+## Ground Rules
+- Work **one phase at a time**. Stop and ask for approval before moving to the next phase.
+- Always **show me the script** before running it.
+- **Never click "ลงนาม" (sign)** unless I explicitly type "go ahead" or "approve" for that specific document.
+- If a selector looks auto-generated or fragile, flag it and ask me to verify before using it.
+- Save a screenshot after every major step into the `/screenshots/` folder.
+- All scripts must have `DRY_RUN = True` at the top until I confirm otherwise.
+- Log every action to `edoc_automation.log` with timestamps.
+
+---
+
+## Target System
+- **URL:** https://doc.buu.ac.th/docweb
+- **Platform:** Legacy ASP.NET WebForms (.NET Framework)
+- **Language:** Thai UI
+- **Auth:** Forms-based login (username + password)
+
+---
+
+## Credentials
+- **Username:** `<FILL_IN>`
+- **Password:** `<FILL_IN>`
+> ⚠️ Never hardcode credentials in scripts. Load from environment variables or a `.env` file.
+
+```python
+import os
+from dotenv import load_dotenv
+load_dotenv()
+USERNAME = os.getenv("EDOC_USERNAME")
+PASSWORD = os.getenv("EDOC_PASSWORD")
 ```
 
-All commands below use `uv run` to execute within the managed environment.
+---
 
-## Commands
+## Workflow (Human Steps Being Automated)
+1. Navigate to https://doc.buu.ac.th/docweb
+2. Login with username and password
+3. Click the shortcut to the desired inbox
+4. For each document: read content, then click **"ลงนาม"** (sign)
 
-```bash
-# Run all tests (secrets-dependent tests auto-skip if .env is incomplete)
-uv run pytest tests/ -v
+---
 
-# Run a single test file
-uv run pytest tests/test_01_login.py -v
+## Automation Workflow (What This Bot Does)
+1. Login and navigate to the inbox
+2. Collect all documents in the inbox (title, sender, date, preview)
+3. Read the content of each document
+4. Use AI (Claude) to analyze all documents and suggest a **signing order with reasoning**
+5. Present the suggested order to the user for review
+6. **Wait for explicit approval** before signing any document
+7. Upon approval, sign documents one by one in the approved order
+8. Take a screenshot after each signing action as confirmation
 
-# Run with visible browser (useful for debugging Playwright selectors)
-HEADLESS=false uv run pytest tests/test_02_inbox.py -v
+---
 
-# Full scan + email
-uv run python main.py --scan
+## Phases
 
-# Start approval server (run after --scan, then click links in email)
-uv run python main.py --serve
+### Phase 1 — Recon (No actions)
+- Navigate to login page
+- Take a screenshot
+- Print all form field IDs, button texts, and visible element labels
+- Do NOT log in yet
 
-# Scan and keep server running
-uv run python main.py --scan --serve
+### Phase 2 — Login
+- Log in using credentials from `.env`
+- Take a screenshot of the page after login
+- Print the current URL and page title
+- Identify the inbox shortcut button/link
+
+### Phase 3 — Navigate to Inbox
+- Click the shortcut to the inbox (to be identified in Phase 2)
+- Take a screenshot of the inbox
+- Print the number of documents visible and their titles/dates
+
+### Phase 4 — Read All Documents
+- For each document in the inbox:
+  - Click to open it
+  - Extract the document title, sender, date, and full body text
+  - Save extracted content to `documents_data.json`
+  - Navigate back to the inbox
+- Do NOT click "ลงนาม" at this stage
+
+### Phase 5 — AI Analysis & Suggested Order
+- Pass all extracted document data to Claude API
+- Ask Claude to suggest a signing order based on urgency, sender, topic, and date
+- Print the suggested order with reasoning for each document
+- **Wait for user approval before proceeding**
+
+### Phase 6 — Sign Documents (Approval Required)
+- `DRY_RUN = True` by default
+- When `DRY_RUN = False` AND user has approved the order:
+  - Sign each document one by one in the approved order
+  - After each signing, take a screenshot named `signed_[doc_title]_[timestamp].png`
+  - Log the result
+
+---
+
+## Known .NET WebForms Quirks (Update as Discovered)
+- Element IDs are likely auto-generated (e.g., `ctl00_ContentPlaceHolder1_btnLogin`)
+- Form submissions may use ViewState — always `page.goto()` before filling forms
+- Buttons may trigger postbacks — use `page.expect_navigation()` after clicks
+- Session may expire — monitor for redirect back to login page
+- Thai characters in selectors — use `get_by_text()` where possible
+- **Post-login content is inside nested iframes** — always switch frames before interacting:
+  ```python
+  outer = page.frame_locator("#iframeHomeBody")
+  inner = outer.frame_locator("#home_list_full")
+  ```
+
+---
+
+## Discovered Selectors
+| Element              | Selector / Notes                                      |
+|----------------------|-------------------------------------------------------|
+| Username field       | `#txtLogin`                                           |
+| Password field       | `#txtPassword`                                        |
+| Login button         | `#btnLogin`                                           |
+| Outer iframe         | `#iframeHomeBody`                                     |
+| Inner iframe         | `id="home_list_full"`, `name="home_list"` (inside `#iframeHomeBody`); use `frame_locator("#home_list_full")` for clicks, `page.frame(name="home_list")` to get the Frame object |
+| ทางลัด tab           | `.home-content-tab-shortcuts` (inside inner iframe)   |
+| Inbox link           | `get_by_text("ผศ. ดร. ณยศ ...")` (inside inner iframe)|
+| Document list items  | `a.home-list-open-item` in `home_list` frame; use `force=True` to click after first doc opens |
+| Notes/recommendation | `.DocNoteContent` inside `iframeContent0`             |
+| Close document tab   | `page.evaluate("VN.V2.App.Home.Page.HideContentFrame()")` — more reliable than clicking the close button, which is sometimes hidden |
+| Sign button          | `#btnSign` inside `iframeContent0`                    |
+| Sign option radio    | `#optSignConfirmOptions0` (main page)                 |
+| คำสั่งการ field      | `#txtTargetTypeNote` (main page)                      |
+| Confirm sign button  | `#btnSignConfirmOK` (main page)                       |
+
+---
+
+## Project File Structure
+```
+eDocAutomation/
+├── CLAUDE.md               ← This file
+├── .env                    ← Credentials (never commit to git)
+├── .env.example
+├── pyproject.toml          ← uv-managed dependencies (playwright, python-dotenv)
+├── phase1_login.py         ← Login + selector recon (Phases 1 & 2 combined)
+├── phase2_inbox.py         ← Navigate to inbox via ทางลัด shortcut (Phase 3)
+├── phase3_read_docs.py     ← Read all documents, save to JSON (Phase 4)
+├── phase4_ai_analysis.py   ← Claude API analysis + suggested order (Phase 5)
+├── phase5_sign.py          ← Sign documents with approval gate (Phase 6)
+├── documents_data.json     ← Extracted document content
+├── edoc_automation.log     ← Action log
+└── screenshots/            ← All screenshots saved here
 ```
 
-## Architecture
+---
 
-The app automates the BUU e-Doc web system (`https://doc.buu.ac.th/docweb/v2/`) for the Dean of Engineering. The pipeline is:
+## AI Analysis Prompt (Phase 5)
+When calling Claude API for document analysis, use this system prompt:
 
 ```
-EdocClient (Playwright) → AiAnalyzer (Claude API) → email_sender (Gmail SMTP)
-                                                          ↓
-                                              User clicks link in Gmail
-                                                          ↓
-                                         web_server (FastAPI localhost:8080)
-                                                          ↓
-                                         EdocClient.submit_order() × N
+You are an assistant helping a Thai university administrator prioritize document signing.
+Given a list of documents with their titles, senders, dates, and content,
+suggest the optimal signing order based on:
+1. Urgency (deadlines, time-sensitive language)
+2. Seniority of sender
+3. Topic importance (financial, legal, administrative)
+4. Date received (older first as tiebreaker)
+
+Respond in Thai. For each document, provide:
+- Recommended rank
+- One-sentence reason for the ranking
 ```
 
-**`src/edoc_client.py`** — All browser automation. Uses Playwright headless Chromium with `locale=th-TH`. The target system is ASP.NET WebForms with `__VIEWSTATE`; Playwright handles this transparently. `login()` is implemented. `get_inbox_items()`, `get_document_detail()`, and `submit_order()` are **stubs** — selectors must be discovered by running tests with `HEADLESS=false` and inspecting screenshots saved to `screenshots/`.
+---
 
-**`src/ai_analyzer.py`** — Synchronous Claude API wrapper (`claude-sonnet-4-6`). Uses prompt caching on the Thai-language system prompt. Returns `Recommendation.action` as either `"ทราบ / ดำเนินการตามเสนอ"` or `"สั่งการด้วยตนเอง"`. Generates HMAC-SHA256 tokens per `doc_id` to authenticate approval URLs.
+## Safety Checklist Before Running Phase 6
+- [ ] `DRY_RUN = False` confirmed by user
+- [ ] Suggested signing order reviewed and approved
+- [ ] Screenshots folder is writable
+- [ ] `.env` file has correct credentials
+- [ ] Session is still active (not timed out)
 
-**`src/web_server.py`** — FastAPI app on `localhost:8080`. Reads pending approvals from `/tmp/edoc_pending.json` (written by `main.py --scan`). Validates HMAC tokens before calling `EdocClient.submit_order()`. Shuts down via `/done` or after all approvals are processed.
+---
 
-**`src/email_sender.py`** — Builds an HTML email with a table of documents. Green rows = auto-approvable with `[อนุมัติ]` links to `localhost:8080`. Yellow rows = require manual attention. Includes a bulk-approve button.
-
-**`src/models.py`** — Two dataclasses: `Document` (fields from inbox list + `attachment_note` for ข้อความแนบท้าย/สั่งการ) and `Recommendation` (wraps `Document` with `action`, `reason`, `token`).
-
-## Test Strategy
-
-Tests are numbered 01–06 and must be run in order — each depends on the previous step working. Tests auto-skip when required secrets are absent rather than fail.
-
-| Test | Dependency | Status |
-|------|-----------|--------|
-| test_01_login | EDOC_USERNAME, EDOC_PASSWORD | Login implemented |
-| test_02_inbox | test_01 passing | `get_inbox_items()` is a stub |
-| test_03_document | test_02 passing | `get_document_detail()` is a stub |
-| test_04_ai_analyze | ANTHROPIC_API_KEY | Implemented |
-| test_05_email | GMAIL_* secrets | HTML builder test runs without secrets |
-| test_06_submit | test_03 passing | `submit_order()` is a stub |
-
-## Implementing the Stubs
-
-When implementing `get_inbox_items()`, `get_document_detail()`, or `submit_order()`:
-
-1. Run the relevant test with `HEADLESS=false`
-2. Inspect screenshots in `screenshots/` at each step
-3. Use browser DevTools (the visible Chromium window) to identify CSS selectors
-4. The system uses jQuery — check for `id` attributes prefixed with `ctl00$body$` in form POSTs
-
-## Secrets
-
-All secrets are loaded from `.env` (dotenv format, gitignored). See `.env.example` for required keys. `APPROVAL_SECRET` is optional — auto-generated per-run if absent (tokens won't survive server restarts without it set explicitly).
+## Session Notes (Update After Each Session)
+| Date | Phase Completed | Notes |
+|------|----------------|-------|
+|      |                |       |

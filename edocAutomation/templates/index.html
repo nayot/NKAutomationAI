@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eDoc Automation</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .log-item { font-family: monospace; font-size: 0.8rem; }
+  </style>
+</head>
+<body class="bg-gray-100 min-h-screen" x-data="app()" x-init="init()">
+
+<div class="max-w-4xl mx-auto py-8 px-4 space-y-6">
+
+  <h1 class="text-2xl font-bold text-gray-800 text-center">eDoc Automation — BUU</h1>
+
+  <!-- ── Phase 3 ─────────────────────────────────────────────── -->
+  <div class="bg-white rounded-xl shadow p-6 space-y-4">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-gray-700">Phase 3 — อ่านเอกสาร</h2>
+      <span class="text-xs px-2 py-1 rounded-full font-medium"
+            :class="{
+              'bg-green-100 text-green-700': p3.done,
+              'bg-yellow-100 text-yellow-700': p3.running && !p3.done,
+              'bg-gray-100 text-gray-500': !p3.running && !p3.done
+            }"
+            x-text="p3.done ? 'เสร็จแล้ว' : p3.running ? 'กำลังทำงาน…' : 'รอ'"></span>
+    </div>
+
+    <!-- Progress bar -->
+    <div x-show="p3.total > 0" class="w-full bg-gray-200 rounded-full h-2">
+      <div class="bg-blue-500 h-2 rounded-full transition-all duration-300"
+           :style="`width:${p3.total ? Math.round(p3.progress/p3.total*100) : 0}%`"></div>
+    </div>
+    <p x-show="p3.total > 0" class="text-sm text-gray-500"
+       x-text="`${p3.progress} / ${p3.total} เอกสาร`"></p>
+
+    <!-- Log -->
+    <div x-show="p3.log.length > 0"
+         class="bg-gray-50 border rounded-lg p-3 max-h-48 overflow-y-auto space-y-1">
+      <template x-for="(entry, i) in p3.log" :key="i">
+        <div class="log-item text-gray-600" x-text="entry"></div>
+      </template>
+    </div>
+
+    <div class="flex gap-3">
+      <button @click="phase3Start()"
+              :disabled="p3.running"
+              class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium
+                     hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
+        เริ่ม
+      </button>
+      <button @click="phase3Stop()"
+              :disabled="!p3.running"
+              class="px-4 py-2 bg-red-500 text-white rounded-lg text-sm font-medium
+                     hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed">
+        หยุด
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Phase 4 ─────────────────────────────────────────────── -->
+  <div class="bg-white rounded-xl shadow p-6 space-y-4">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-gray-700">Phase 4 — วิเคราะห์ด้วย AI</h2>
+      <span class="text-xs px-2 py-1 rounded-full font-medium"
+            :class="{
+              'bg-green-100 text-green-700': p4.done,
+              'bg-yellow-100 text-yellow-700': p4.running && !p4.done,
+              'bg-gray-100 text-gray-500': !p4.running && !p4.done
+            }"
+            x-text="p4.done ? 'เสร็จแล้ว' : p4.running ? 'กำลังคิด…' : 'รอ'"></span>
+    </div>
+
+    <!-- Thinking indicator -->
+    <p x-show="p4.thinking && !p4.done" class="text-sm text-yellow-600 animate-pulse">
+      AI กำลังวิเคราะห์เอกสาร…
+    </p>
+
+    <!-- Document cards -->
+    <div x-show="p4.results.length > 0" class="space-y-3">
+      <template x-for="doc in p4.results" :key="doc.data_id">
+        <div class="border rounded-lg p-4 space-y-2"
+             :class="p4.decisions[doc.data_id]?.approved ? 'border-green-400 bg-green-50' : 'border-gray-200'">
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 font-mono"
+                      x-text="`#${doc.rank}`"></span>
+                <span class="font-medium text-gray-800 text-sm leading-snug" x-text="doc.title"></span>
+              </div>
+              <p x-show="doc.summary" class="text-sm text-gray-600 mt-1" x-text="doc.summary"></p>
+              <p x-show="doc.reason" class="text-xs text-gray-400 mt-0.5" x-text="'เหตุผล: ' + doc.reason"></p>
+            </div>
+            <!-- Approve / Skip toggle -->
+            <div class="flex gap-2 shrink-0">
+              <button @click="p4Approve(doc.data_id)"
+                      class="px-3 py-1 text-xs rounded font-medium transition-colors"
+                      :class="p4.decisions[doc.data_id]?.approved
+                              ? 'bg-green-600 text-white'
+                              : 'bg-gray-100 text-gray-600 hover:bg-green-100'">
+                อนุมัติ
+              </button>
+              <button @click="p4Skip(doc.data_id)"
+                      class="px-3 py-1 text-xs rounded font-medium transition-colors"
+                      :class="!p4.decisions[doc.data_id]?.approved
+                              ? 'bg-gray-400 text-white'
+                              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'">
+                ข้าม
+              </button>
+            </div>
+          </div>
+
+          <!-- Notes (collapsed by default) -->
+          <div x-show="p4.decisions[doc.data_id]?.approved">
+            <details class="text-xs text-gray-500 mt-1">
+              <summary class="cursor-pointer hover:text-gray-700">ดูบันทึก</summary>
+              <pre class="mt-1 whitespace-pre-wrap font-sans" x-text="p4.notesMap[doc.data_id] || '(ไม่มีบันทึก)'"></pre>
+            </details>
+          </div>
+
+          <!-- Command input -->
+          <div x-show="p4.decisions[doc.data_id]?.approved" class="flex items-center gap-2">
+            <label class="text-xs text-gray-500 shrink-0">คำสั่งการ:</label>
+            <input type="text"
+                   x-model="p4.decisions[doc.data_id].command"
+                   placeholder="ดำเนินการตามเสนอ"
+                   class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <div class="flex gap-3 flex-wrap">
+      <button @click="phase4Start()"
+              :disabled="p4.running || !p3.done"
+              class="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium
+                     hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed">
+        เริ่มวิเคราะห์
+      </button>
+      <button @click="phase4Submit()"
+              x-show="p4.results.length > 0"
+              :disabled="p4.submitting"
+              class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium
+                     hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed">
+        <span x-text="p4.submitting ? 'กำลังบันทึก…' : 'ส่งคำตัดสิน'"></span>
+      </button>
+    </div>
+
+    <p x-show="p4.submitMsg" class="text-sm text-green-700 font-medium" x-text="p4.submitMsg"></p>
+  </div>
+
+  <!-- ── Phase 5 ─────────────────────────────────────────────── -->
+  <div class="bg-white rounded-xl shadow p-6 space-y-4">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-gray-700">Phase 5 — ลงนาม</h2>
+      <span class="text-xs px-2 py-1 rounded-full font-medium"
+            :class="{
+              'bg-green-100 text-green-700': p5.done,
+              'bg-yellow-100 text-yellow-700': p5.running && !p5.done,
+              'bg-gray-100 text-gray-500': !p5.running && !p5.done
+            }"
+            x-text="p5.done ? 'เสร็จแล้ว' : p5.running ? 'กำลังทำงาน…' : 'รอ'"></span>
+    </div>
+
+    <!-- DRY_RUN toggle -->
+    <label class="flex items-center gap-3 cursor-pointer select-none">
+      <div class="relative">
+        <input type="checkbox" x-model="p5.dryRun" class="sr-only" />
+        <div class="w-10 h-5 rounded-full transition-colors"
+             :class="p5.dryRun ? 'bg-orange-400' : 'bg-gray-300'"></div>
+        <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform"
+             :class="p5.dryRun ? 'translate-x-5' : 'translate-x-0'"></div>
+      </div>
+      <span class="text-sm font-medium" :class="p5.dryRun ? 'text-orange-600' : 'text-gray-600'"
+            x-text="p5.dryRun ? 'DRY RUN (ทดสอบ — ไม่ลงนามจริง)' : 'LIVE — จะลงนามจริง!'"></span>
+    </label>
+
+    <!-- Active decision card -->
+    <div x-show="p5.pendingDoc" x-cloak
+         class="border-2 border-yellow-400 bg-yellow-50 rounded-xl p-5 space-y-4 animate-pulse-once">
+      <p class="text-sm font-semibold text-yellow-800">รอการอนุมัติ:</p>
+      <p class="font-medium text-gray-800" x-text="p5.pendingDoc?.title"></p>
+      <p class="text-sm text-gray-600">
+        คำสั่งการ: <span class="font-medium" x-text="p5.pendingDoc?.final_command"></span>
+      </p>
+      <!-- Form screenshot -->
+      <div x-show="p5.pendingScreenshot">
+        <img :src="`/screenshots/${p5.pendingScreenshot}`"
+             class="rounded-lg border shadow max-w-full" alt="form preview" />
+      </div>
+      <div class="flex gap-3">
+        <button @click="phase5Decide('go')"
+                class="px-5 py-2 bg-green-600 text-white rounded-lg font-medium text-sm hover:bg-green-700">
+          ดำเนินการ (Go Ahead)
+        </button>
+        <button @click="phase5Decide('skip')"
+                class="px-5 py-2 bg-gray-400 text-white rounded-lg font-medium text-sm hover:bg-gray-500">
+          ข้าม (Skip)
+        </button>
+      </div>
+    </div>
+
+    <!-- Completed docs list -->
+    <div x-show="p5.completed.length > 0" class="space-y-2">
+      <p class="text-xs text-gray-500 font-medium uppercase tracking-wide">ดำเนินการแล้ว</p>
+      <template x-for="(item, i) in p5.completed" :key="i">
+        <div class="flex items-start gap-3 border rounded-lg p-3">
+          <span class="text-lg" x-text="item.action === 'go' ? '✅' : '⏭️'"></span>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-medium text-gray-700" x-text="item.title"></p>
+            <p class="text-xs text-gray-400" x-text="item.action === 'go' ? 'ลงนามแล้ว' : 'ข้าม'"></p>
+          </div>
+          <!-- After screenshot thumbnail -->
+          <div x-show="item.after_screenshot">
+            <img :src="`/screenshots/${item.after_screenshot}`"
+                 class="w-20 h-14 object-cover rounded border cursor-pointer"
+                 @click="p5.lightbox = `/screenshots/${item.after_screenshot}`"
+                 alt="after" />
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <div class="flex gap-3">
+      <button @click="phase5Start()"
+              :disabled="p5.running || !p4.submitted"
+              class="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium
+                     hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed">
+        เริ่มลงนาม
+      </button>
+      <button @click="phase5Stop()"
+              :disabled="!p5.running"
+              class="px-4 py-2 bg-gray-500 text-white rounded-lg text-sm font-medium
+                     hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed">
+        หยุด
+      </button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Lightbox -->
+<div x-show="p5.lightbox" x-cloak
+     class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 cursor-zoom-out"
+     @click="p5.lightbox = null">
+  <img :src="p5.lightbox" class="max-w-[90vw] max-h-[90vh] rounded-lg shadow-2xl" />
+</div>
+
+<script>
+function app() {
+  return {
+    p3: {
+      running: false, done: false,
+      progress: 0, total: 0,
+      log: [],
+      es: null,
+    },
+    p4: {
+      running: false, done: false, thinking: false,
+      results: [], decisions: {}, notesMap: {},
+      submitting: false, submitted: false, submitMsg: '',
+      es: null,
+    },
+    p5: {
+      running: false, done: false,
+      dryRun: true,
+      pendingDoc: null, pendingScreenshot: null,
+      completed: [],
+      lightbox: null,
+      es: null,
+    },
+
+    async init() {
+      const st = await fetch('/api/status').then(r => r.json());
+      this.p3.running = st.phase3.running;
+      this.p3.done    = st.phase3.done;
+      this.p4.running = st.phase4.running;
+      this.p4.done    = st.phase4.done;
+      this.p5.running = st.phase5.running;
+      this.p5.done    = st.phase5.done;
+
+      if (this.p4.done) {
+        await this.fetchP4Results();
+        this.p4.submitted = true;
+      }
+      if (this.p3.running) this.connectP3();
+      if (this.p4.running) this.connectP4();
+      if (this.p5.running) this.connectP5();
+    },
+
+    // ── Phase 3 ────────────────────────────────────────────────
+    async phase3Start() {
+      this.p3.log = []; this.p3.progress = 0; this.p3.total = 0; this.p3.done = false;
+      await fetch('/api/phase3/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({dry_run: false}) });
+      this.p3.running = true;
+      this.connectP3();
+    },
+    async phase3Stop() {
+      await fetch('/api/phase3/stop', { method: 'POST' });
+    },
+    connectP3() {
+      if (this.p3.es) this.p3.es.close();
+      const es = new EventSource('/api/phase3/stream');
+      this.p3.es = es;
+      es.onmessage = (e) => {
+        const ev = JSON.parse(e.data);
+        if (ev.type === 'start') {
+          this.p3.total = ev.total;
+          this.p3.log.push(`พบ ${ev.total} เอกสาร`);
+        } else if (ev.type === 'progress') {
+          this.p3.progress = ev.index;
+          this.p3.log.push(`[${ev.index}/${ev.total}] ${ev.title}`);
+          this.$nextTick(() => {
+            const el = document.querySelector('.log-item:last-child');
+            if (el) el.scrollIntoView({ behavior: 'smooth' });
+          });
+        } else if (ev.type === 'done') {
+          this.p3.done = true; this.p3.running = false;
+          this.p3.log.push('✅ อ่านเอกสารเสร็จสิ้น');
+          es.close();
+        } else if (ev.type === 'error') {
+          this.p3.running = false;
+          this.p3.log.push(`❌ Error: ${ev.message}`);
+          es.close();
+        } else if (ev.type === 'stopped') {
+          this.p3.running = false;
+          this.p3.log.push('⏹ หยุดแล้ว');
+          es.close();
+        }
+      };
+    },
+
+    // ── Phase 4 ────────────────────────────────────────────────
+    async phase4Start() {
+      this.p4.results = []; this.p4.decisions = {}; this.p4.thinking = false;
+      this.p4.done = false; this.p4.submitMsg = ''; this.p4.submitted = false;
+      await fetch('/api/phase4/start', { method: 'POST' });
+      this.p4.running = true;
+      this.connectP4();
+    },
+    connectP4() {
+      if (this.p4.es) this.p4.es.close();
+      const es = new EventSource('/api/phase4/stream');
+      this.p4.es = es;
+      es.onmessage = async (e) => {
+        const ev = JSON.parse(e.data);
+        if (ev.type === 'thinking') {
+          this.p4.thinking = true;
+        } else if (ev.type === 'done') {
+          this.p4.thinking = false; this.p4.done = true; this.p4.running = false;
+          await this.fetchP4Results();
+          es.close();
+        } else if (ev.type === 'error') {
+          this.p4.running = false; this.p4.thinking = false;
+          alert('Phase 4 error: ' + ev.message);
+          es.close();
+        }
+      };
+    },
+    async fetchP4Results() {
+      const docs = await fetch('/api/phase4/results').then(r => r.json());
+      this.p4.results = docs;
+      // Load document notes from documents_data.json via a helper endpoint (or just skip)
+      // Pre-populate decisions: all approved by default with default command
+      docs.forEach(doc => {
+        if (!this.p4.decisions[doc.data_id]) {
+          this.p4.decisions[doc.data_id] = { approved: true, command: '' };
+        }
+      });
+      // Try to load notes
+      try {
+        const raw = await fetch('/api/documents').then(r => r.json());
+        raw.forEach(d => { this.p4.notesMap[d.data_id] = d.notes || ''; });
+      } catch (_) {}
+    },
+    p4Approve(data_id) {
+      if (!this.p4.decisions[data_id]) this.p4.decisions[data_id] = { approved: true, command: '' };
+      this.p4.decisions[data_id].approved = true;
+    },
+    p4Skip(data_id) {
+      if (!this.p4.decisions[data_id]) this.p4.decisions[data_id] = { approved: false, command: '' };
+      this.p4.decisions[data_id].approved = false;
+    },
+    async phase4Submit() {
+      this.p4.submitting = true;
+      const DEFAULT = 'ดำเนินการตามเสนอ';
+      const decisions = this.p4.results.map(doc => ({
+        data_id: doc.data_id,
+        command: this.p4.decisions[doc.data_id]?.command || DEFAULT,
+        approved: this.p4.decisions[doc.data_id]?.approved ?? true,
+      }));
+      const resp = await fetch('/api/phase4/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decisions }),
+      }).then(r => r.json());
+      this.p4.submitting = false;
+      this.p4.submitted = true;
+      this.p4.submitMsg = `✅ บันทึกแล้ว ${resp.saved} เอกสาร`;
+    },
+
+    // ── Phase 5 ────────────────────────────────────────────────
+    async phase5Start() {
+      this.p5.completed = []; this.p5.pendingDoc = null; this.p5.pendingScreenshot = null;
+      this.p5.done = false;
+      await fetch('/api/phase5/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: this.p5.dryRun }),
+      });
+      this.p5.running = true;
+      this.connectP5();
+    },
+    async phase5Stop() {
+      await fetch('/api/phase5/stop', { method: 'POST' });
+    },
+    connectP5() {
+      if (this.p5.es) this.p5.es.close();
+      const es = new EventSource('/api/phase5/stream');
+      this.p5.es = es;
+      es.onmessage = (e) => {
+        const ev = JSON.parse(e.data);
+        if (ev.type === 'await_decision') {
+          this.p5.pendingDoc = ev.doc;
+          this.p5.pendingScreenshot = ev.form_screenshot;
+        } else if (ev.type === 'doc_done') {
+          this.p5.pendingDoc = null; this.p5.pendingScreenshot = null;
+          this.p5.completed.push({
+            title: ev.title,
+            action: ev.action,
+            after_screenshot: ev.after_screenshot,
+          });
+        } else if (ev.type === 'all_done') {
+          this.p5.done = true; this.p5.running = false;
+          es.close();
+        } else if (ev.type === 'error') {
+          this.p5.running = false;
+          alert('Phase 5 error: ' + ev.message);
+          es.close();
+        } else if (ev.type === 'stopped') {
+          this.p5.running = false;
+          this.p5.pendingDoc = null;
+          es.close();
+        }
+      };
+    },
+    async phase5Decide(action) {
+      const data_id = this.p5.pendingDoc?.data_id;
+      if (!data_id) return;
+      await fetch(`/api/phase5/decision/${data_id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+    },
+  };
+}
+</script>
+
+</body>
+</html>
