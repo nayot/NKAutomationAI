@@ -44,26 +44,71 @@ async def get_inbox_frame(page):
             return frame
     return None
 
+async def wait_for_content_frame(page, timeout=15000):
+    """Scan all frames for #btnSign, retrying until found or timeout."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout / 1000
+    while loop.time() < deadline:
+        for frame in page.frames:
+            try:
+                btn = await frame.query_selector("#btnSign")
+                if btn:
+                    return frame
+            except Exception:
+                continue
+        await asyncio.sleep(0.3)
+    return None
+
 async def open_and_fill_form(page, doc) -> dict:
     """Open doc, click btnSign, select option, fill command. Returns {form_screenshot, data_id, ts}."""
     data_id = doc["data_id"]
     command = doc["final_command"]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    inbox_frame = await get_inbox_frame(page)
-    await inbox_frame.click(f"a[data-id='{data_id}']", force=True)
-    await page.wait_for_load_state("networkidle")
-    await page.screenshot(path=f"screenshots/phase5_before_{data_id}_{ts}.png")
-    logging.info("Opened: %s", doc["title"])
+    content_frame = None
+    for attempt in range(3):
+        if attempt > 0:
+            logging.warning("Retry %d — re-navigating to inbox for %s", attempt, data_id)
+            await navigate_to_inbox(page)
+            await asyncio.sleep(1.5)
 
-    content_frame = page.frame(name="iframeContent0")
+        inbox_frame = await get_inbox_frame(page)
+        if not inbox_frame:
+            logging.warning("Inbox frame not found on attempt %d", attempt + 1)
+            await asyncio.sleep(2)
+            continue
+
+        await inbox_frame.click(f"a[data-id='{data_id}']", force=True)
+        await page.wait_for_load_state("networkidle")
+
+        if attempt == 0:
+            await page.screenshot(path=f"screenshots/phase5_before_{data_id}_{ts}.png")
+        logging.info("Clicked doc link (attempt %d): %s", attempt + 1, doc["title"])
+
+        content_frame = await wait_for_content_frame(page)
+        if content_frame:
+            break
+
+        logging.warning("Content frame not found on attempt %d — saving debug screenshot", attempt + 1)
+        await page.screenshot(path=f"screenshots/phase5_debug_{data_id}_{ts}_attempt{attempt + 1}.png")
+
     if not content_frame:
-        logging.error("iframeContent0 not found for %s", doc["title"])
-        raise RuntimeError("iframeContent0 missing")
+        logging.error("Content frame missing after retries: %s", doc["title"])
+        raise RuntimeError("Content frame missing")
 
-    await content_frame.evaluate("document.getElementById('btnSign').click()")
-    await page.wait_for_load_state("networkidle")
-    logging.info("Clicked btnSign: %s", data_id)
+    for sign_attempt in range(3):
+        await content_frame.evaluate("document.getElementById('btnSign').click()")
+        logging.info("Clicked btnSign (attempt %d): %s", sign_attempt + 1, data_id)
+        try:
+            await page.wait_for_selector("#optSignConfirmOptions0", state="visible", timeout=8000)
+            break
+        except Exception:
+            if sign_attempt == 2:
+                await page.screenshot(path=f"screenshots/phase5_nodialog_{data_id}_{ts}.png")
+                raise RuntimeError(f"Sign dialog never appeared for {doc['title']}")
+            logging.warning("Sign dialog not visible, retrying btnSign click")
+    else:
+        pass  # unreachable but keeps linter happy
 
     await page.click("#optSignConfirmOptions0")
     await page.fill("#txtTargetTypeNote", command)
@@ -86,6 +131,7 @@ async def confirm_sign(page, dry_run: bool, data_id: str, ts: str) -> str:
     await page.screenshot(path=after_path)
     await page.evaluate("VN.V2.App.Home.Page.HideContentFrame()")
     await page.wait_for_load_state("networkidle")
+    await asyncio.sleep(1.5)
     return after_path
 
 async def dismiss_form(page):
@@ -118,13 +164,6 @@ async def main():
         for i, doc in enumerate(approved, 1):
             print(f"\n[{i}/{len(approved)}] {doc['title']}")
             print(f"     คำสั่งการ: {doc['final_command']}")
-
-            if not DRY_RUN:
-                confirm = input("     พิมพ์ 'go ahead' เพื่อลงนาม หรือ 's' เพื่อข้าม: ").strip().lower()
-                if confirm != "go ahead":
-                    print("     → ข้าม")
-                    logging.info("Skipped: %s", doc["title"])
-                    continue
 
             await sign_document(page, doc)
             label = "[DRY_RUN] ยกเลิกหลังกรอกฟอร์ม" if DRY_RUN else "ลงนามสำเร็จ ✓"

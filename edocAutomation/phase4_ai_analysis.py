@@ -19,6 +19,7 @@ DEFAULT_COMMAND = "ดำเนินการตามเสนอ"
 SYSTEM_PROMPT_BASE = """\
 You are an assistant helping a Thai university administrator prioritize document signing.
 Given a list of documents with their titles and recommendation notes, return a JSON array (no prose, no markdown fences).
+You MUST include every single document from the input — do not omit any.
 
 Each element must have:
   "rank"    – integer, 1 = sign first
@@ -81,7 +82,7 @@ def main():
     print(f"Analyzing {len(docs)} documents…\n")
     logging.info("Phase 4 — AI analysis of %d documents", len(docs))
 
-    TEST_LIMIT = 10  # Set to None to analyze all documents
+    TEST_LIMIT = None # Set to None to analyze all documents
     sample = docs[:TEST_LIMIT] if TEST_LIMIT else docs
     print(f"Sending {len(sample)} of {len(docs)} documents to AI…\n")
 
@@ -90,29 +91,33 @@ def main():
         print(f"(ใช้ประวัติการลงนาม {len(history)} รายการเป็นแนวทาง)\n")
 
     client = anthropic.Anthropic()
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=8192,
+    with client.messages.stream(
+        model="claude-sonnet-4-6",
+        max_tokens=64000,
         system=build_system_prompt(history),
         messages=[{"role": "user", "content": build_prompt(sample)}],
-    )
-
-    raw = response.content[0].text.strip()
+    ) as stream:
+        raw = stream.get_final_text().strip()
     logging.info("AI response received (%d chars)", len(raw))
 
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1]
         raw = raw.rsplit("```", 1)[0].strip()
 
-    start, end = raw.find("["), raw.rfind("]")
-    if start != -1 and end != -1:
-        raw = raw[start:end + 1]
+    start = raw.find("[")
+    if start != -1:
+        raw = raw[start:]
 
     try:
-        parsed = json.loads(repair_json(raw))
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = json.loads(repair_json(raw))
         for item in parsed:
             item["data_id"] = str(item["data_id"])
         suggested = sorted(parsed, key=lambda x: x["rank"])
+        if len(suggested) != len(sample):
+            print(f"⚠️  WARNING: AI returned {len(suggested)} of {len(sample)} documents.")
     except Exception as e:
         print(f"ERROR: could not parse AI response ({e}).")
         print(f"First 300 chars: {raw[:300]!r}")
@@ -125,7 +130,7 @@ def main():
         print(f"[{item['rank']}] {item['title']}")
         if item.get("summary"):
             print(f"     สรุป:   {item['summary']}")
-        print(f"     เหตุผล: {item['reason']}")
+        print(f"     เหตุผล: {item.get('reason', '-')}")
         print()
 
     print("=" * 50)
