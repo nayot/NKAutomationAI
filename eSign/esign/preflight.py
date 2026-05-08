@@ -126,7 +126,7 @@ def render_summary(console: Console, result: PreflightResult, batch_id_preview: 
     console.print(
         Panel(
             table,
-            title="[bold]DocAutoSign — pre-flight summary[/bold]",
+            title="[bold]eSign — pre-flight summary[/bold]",
             subtitle="upload → assign → sign → download",
             border_style="cyan",
         )

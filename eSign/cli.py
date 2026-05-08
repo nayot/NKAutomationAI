@@ -40,7 +40,7 @@ err_console = Console(stderr=True)
 
 def _version_callback(value: bool) -> None:
     if value:
-        console.print(f"docautosign {VERSION}")
+        console.print(f"esign {VERSION}")
         raise typer.Exit()
 
 
@@ -53,8 +53,16 @@ def _root(
     ),
 ) -> None:
     if ctx.invoked_subcommand is None:
-        # Default subcommand is `run`
-        ctx.invoke(run)
+        # Default subcommand is `run`. Pass explicit defaults — ctx.invoke does
+        # not resolve Typer's OptionInfo wrappers, so we have to spell them out.
+        ctx.invoke(
+            run,
+            config=DEFAULT_CONFIG,
+            input_dir=None,
+            download_dir=None,
+            headless=None,
+            yes=False,
+        )
 
 
 def _resolve_headless(cfg: dict, headless: Optional[bool]) -> bool:

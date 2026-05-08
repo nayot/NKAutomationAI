@@ -1,4 +1,4 @@
-# DocAutoSign
+# eSign
 
 Automates PDF upload, e-signing, and download via [e-sign.buu.ac.th](https://e-sign.buu.ac.th) — the Burapha University electronic signature portal.
 
@@ -15,7 +15,7 @@ Given a folder of PDFs, the tool stamps them with a unique batch ID, uploads the
 ```bash
 # 1. Clone and enter the repo
 git clone <repo-url>
-cd NKAutomationAI/DocAutoSign
+cd NKAutomationAI/eSign
 
 # 2. Install deps (uv) and the Chromium browser
 uv sync
@@ -62,24 +62,24 @@ PASSWORD=your_password
 
 ```bash
 # Default (uses config.yaml; runs the full pipeline)
-uv run python main.py
+uv run esign
 
 # Equivalent to
-uv run python main.py run
+uv run esign run
 
 # Override headless default at the CLI
-uv run python main.py run --headful
-uv run python main.py run --headless
+uv run esign run --headful
+uv run esign run --headless
 
 # Skip the pre-flight confirmation (for automation)
-uv run python main.py run --yes
+uv run esign run --yes
 
 # Override paths from the CLI
-uv run python main.py run --input-dir /path/to/pdfs --download-dir /path/to/out
+uv run esign run --input-dir /path/to/pdfs --download-dir /path/to/out
 
 # Print/write the OpenCLI manifest
-uv run python main.py cli-manifest                # to stdout
-uv run python main.py cli-manifest -o opencli.json
+uv run esign cli-manifest                # to stdout
+uv run esign cli-manifest -o opencli.json
 ```
 
 The CLI shows a Rich pre-flight summary (batch ID, signee, input/output paths, file count, browser mode) and asks for `y/N` confirmation before starting. A unified Rich progress bar tracks the overall pipeline plus each phase (upload → assign → sign → download).
@@ -103,7 +103,7 @@ The CLI refuses to start if any of these fail:
 `opencli.json` describes the CLI surface in the [OpenCLI](https://github.com/) format so external orchestrators can discover and drive it. Regenerate / inspect with:
 
 ```bash
-uv run python main.py cli-manifest
+uv run esign cli-manifest
 ```
 
 ## Pipeline
@@ -120,7 +120,7 @@ uv run python main.py cli-manifest
 ## Project Structure
 
 ```
-DocAutoSign/
+eSign/
 ├── cli.py             # Typer + Rich CLI (entry: docautosign)
 ├── main.py            # Thin entry that delegates to cli:app
 ├── config.yaml        # Signee, paths, browser, timing

@@ -22,7 +22,7 @@ browsers installed.
 
 ```bash
 git clone <repo>
-cd edocAutomation
+cd eDoc
 uv sync                                 # installs the package + deps
 uv run playwright install chromium      # one-time, downloads browser
 ```
@@ -240,7 +240,7 @@ Use `--headful` while iterating; switch to `--headless` (or set
 ## Project layout
 
 ```
-edocAutomation/
+eDoc/
 ├── edoc/                      ← the CLI package
 │   ├── cli.py                 ← argparse, flow orchestration, progress UI
 │   ├── config.py              ← .env loader + HEADLESS resolution

@@ -5,12 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running the app
 
 ```bash
-# From inside DocAutoSign/
-cd DocAutoSign
-uv run python main.py                    # default = `run` subcommand
-uv run python main.py run --headful      # override headless from config
-uv run python main.py run --yes          # skip confirmation prompt
-uv run python main.py cli-manifest       # emit OpenCLI manifest
+# From inside eSign/
+cd eSign
+uv run esign                    # default = `run` subcommand
+uv run esign run --headful      # override headless from config
+uv run esign run --yes          # skip confirmation prompt
+uv run esign cli-manifest       # emit OpenCLI manifest
 
 # First-time setup
 uv sync

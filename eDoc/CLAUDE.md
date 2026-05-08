@@ -1,4 +1,4 @@
-# CLAUDE.md — eDocAutomation Project
+# CLAUDE.md — eDoc Project
 
 ## Goal
 Automate document review and signing on the BUU e-Document system at https://doc.buu.ac.th/docweb
@@ -139,7 +139,7 @@ PASSWORD = os.getenv("EDOC_PASSWORD")
 
 ## Project File Structure
 ```
-eDocAutomation/
+eDoc/
 ├── CLAUDE.md               ← This file
 ├── .env                    ← Credentials (never commit to git)
 ├── .env.example
