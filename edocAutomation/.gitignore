@@ -8,9 +8,11 @@ __pycache__/
 *.pyo
 
 # Runtime data
+documents.md
 documents_data.json
 approved_order.json
 signing_history.json
 edoc_automation.log
 ai_response_raw.txt
 screenshots/
+log/
