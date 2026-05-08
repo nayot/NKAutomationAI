@@ -4,21 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bs4 import BeautifulSoup
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
+from playwright.sync_api import Page
+from rich.progress import Progress, TaskID
+
+from esign._retry import retry
 
 BASE_URL = 'https://e-sign.buu.ac.th'
-
-
-def _retry(fn, max_attempts: int = 3, delay: float = 2.0):
-    for attempt in range(max_attempts):
-        try:
-            return fn()
-        except Exception as e:
-            if attempt == max_attempts - 1:
-                raise
-            print(f"    Retrying ({attempt + 1}/{max_attempts - 1})... ({e})")
-            time.sleep(delay * (attempt + 1))
 
 
 @dataclass
@@ -27,30 +18,31 @@ class SignedDoc:
     link: str
 
 
-def _load_all_records(driver, time_sleep: float = 2.0) -> None:
+def _load_all_records(page: Page, time_sleep: float = 2.0) -> None:
     """Click 'รายการเพิ่มเติม' repeatedly until it disappears (all records loaded)."""
     while True:
+        btn = page.locator("xpath=//button[contains(text(), 'รายการเพิ่มเติม')]")
+        if btn.count() == 0:
+            break
         try:
-            btn = driver.find_element(
-                By.XPATH, "//button[contains(text(), 'รายการเพิ่มเติม')]"
-            )
-            driver.execute_script("arguments[0].click();", btn)
+            btn.first.evaluate("el => el.click()")
             time.sleep(time_sleep)
         except Exception:
             break
 
 
-def _collect_signed(driver, batch_id: str, time_sleep: float = 2.0) -> list[SignedDoc]:
-    driver.get(f'{BASE_URL}/successfullySigned')
+def _collect_signed(page: Page, batch_id: str, time_sleep: float = 2.0) -> list[SignedDoc]:
+    retry(lambda: page.goto(f'{BASE_URL}/successfullySigned'))
+    page.wait_for_load_state('networkidle')
     time.sleep(2)
-    _load_all_records(driver, time_sleep)
+    _load_all_records(page, time_sleep)
 
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    soup = BeautifulSoup(page.content(), 'html.parser')
     tag = soup.find('table', class_='sign-document table')
     if tag is None:
         return []
 
-    docs = []
+    docs: list[SignedDoc] = []
     for row in tag.find_all('tr')[1:]:
         a = row.find('a')
         if a is None:
@@ -75,40 +67,37 @@ def _cleanup_filenames(download_dir: str, batch_id: str) -> None:
                 os.path.join(download_dir, fname),
                 os.path.join(download_dir, new_name),
             )
-            print(f"  Renamed: {fname} → {new_name}")
 
 
-def _wait_for_download(download_dir: str, count_before: int, timeout: int = 30) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        current = len([f for f in os.listdir(download_dir) if not f.endswith('.crdownload')])
-        if current > count_before:
-            return
-        time.sleep(0.5)
-
-
-def download_signed(driver, wait, batch_id: str, download_dir: str) -> None:
+def download_signed(
+    page: Page,
+    batch_id: str,
+    download_dir: str,
+    progress: Progress | None = None,
+    task_id: TaskID | None = None,
+    overall_task_id: TaskID | None = None,
+) -> None:
     Path(download_dir).mkdir(parents=True, exist_ok=True)
-    print(f"\n[Download] Loading all signed documents (batch '{batch_id}')...")
-    docs = _collect_signed(driver, batch_id)
+    docs = _collect_signed(page, batch_id)
+
+    if progress is not None and task_id is not None:
+        progress.update(task_id, total=len(docs))
 
     if not docs:
-        print("[Download] No signed documents found for this batch.")
         return
 
-    print(f"[Download] Downloading {len(docs)} document(s) to {download_dir}...")
-    for i, doc in enumerate(docs):
+    for doc in docs:
         def _do(d=doc):
-            driver.get(d.link)
-            count_before = len([f for f in os.listdir(download_dir) if not f.endswith('.crdownload')])
-            wait.until(EC.visibility_of_element_located(
-                (By.XPATH, '//*[@id="toolBar"]/div/a')
-            )).click()
-            _wait_for_download(download_dir, count_before)
+            page.goto(d.link)
+            with page.expect_download(timeout=60_000) as dl_info:
+                page.locator('xpath=//*[@id="toolBar"]/div/a').click()
+            download = dl_info.value
+            download.save_as(os.path.join(download_dir, download.suggested_filename))
 
-        _retry(_do)
-        print(f"  Downloaded [{i + 1}/{len(docs)}] {doc.title}")
+        retry(_do)
+        if progress is not None and task_id is not None:
+            progress.advance(task_id)
+        if progress is not None and overall_task_id is not None:
+            progress.advance(overall_task_id)
 
-    print("[Download] Cleaning up filenames...")
     _cleanup_filenames(download_dir, batch_id)
-    print("[Download] Done.")

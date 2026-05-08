@@ -1,0 +1,58 @@
+{
+  "opencli": "0.1",
+  "info": {
+    "title": "docautosign",
+    "version": "0.2.0",
+    "description": "Automate PDF upload, sign, and download via e-sign.buu.ac.th"
+  },
+  "commands": {
+    "run": {
+      "summary": "Execute the full sign pipeline (upload → assign → sign → download).",
+      "options": {
+        "--config": {
+          "type": "path",
+          "default": "config.yaml",
+          "alias": ["-c"],
+          "description": "Path to config.yaml."
+        },
+        "--input-dir": {
+          "type": "path",
+          "description": "Override input_dir from config.yaml."
+        },
+        "--download-dir": {
+          "type": "path",
+          "description": "Override download_dir from config.yaml."
+        },
+        "--headless": {
+          "type": "boolean",
+          "description": "Force headless mode (overrides config.yaml browser.headless)."
+        },
+        "--headful": {
+          "type": "boolean",
+          "description": "Force headful mode (overrides config.yaml browser.headless)."
+        },
+        "--yes": {
+          "type": "boolean",
+          "alias": ["-y"],
+          "description": "Skip the pre-flight confirmation prompt."
+        }
+      },
+      "exitCodes": {
+        "0": "success",
+        "1": "generic failure",
+        "2": "preflight failure",
+        "3": "browser/login failure"
+      }
+    },
+    "cli-manifest": {
+      "summary": "Print or write the OpenCLI manifest for this CLI.",
+      "options": {
+        "--output": {
+          "type": "path",
+          "alias": ["-o"],
+          "description": "Write the manifest to this path instead of stdout."
+        }
+      }
+    }
+  }
+}

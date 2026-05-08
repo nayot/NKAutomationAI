@@ -2,21 +2,12 @@ import time
 from dataclasses import dataclass
 
 from bs4 import BeautifulSoup
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
+from playwright.sync_api import Page
+from rich.progress import Progress, TaskID
+
+from esign._retry import retry
 
 BASE_URL = 'https://e-sign.buu.ac.th'
-
-
-def _retry(fn, max_attempts: int = 3, delay: float = 2.0):
-    for attempt in range(max_attempts):
-        try:
-            return fn()
-        except Exception as e:
-            if attempt == max_attempts - 1:
-                raise
-            print(f"    Retrying ({attempt + 1}/{max_attempts - 1})... ({e})")
-            time.sleep(delay * (attempt + 1))
 
 
 @dataclass
@@ -25,15 +16,16 @@ class Record:
     link: str
 
 
-def _collect_batch_records(driver, wait, batch_id: str, n_files: int) -> list[Record]:
-    """Paginate through exactly n_pages of manageDocument and collect unassigned records."""
-    driver.get(f'{BASE_URL}/manageDocument')
+def _collect_batch_records(page: Page, batch_id: str, n_files: int) -> list[Record]:
+    """Paginate through manageDocument and collect unassigned records for this batch."""
+    retry(lambda: page.goto(f'{BASE_URL}/manageDocument'))
+    page.wait_for_load_state('networkidle')
     time.sleep(2)
-    records = []
+    records: list[Record] = []
     n_pages = (n_files + 24) // 25
 
-    for page in range(n_pages):
-        soup = BeautifulSoup(driver.page_source, 'lxml')
+    for _ in range(n_pages):
+        soup = BeautifulSoup(page.content(), 'lxml')
         tag = soup.find('table', id='manageDocument')
         if tag is None:
             break
@@ -46,9 +38,13 @@ def _collect_batch_records(driver, wait, batch_id: str, n_files: int) -> list[Re
                 continue
             if num_signees == '0' and title.startswith(batch_id) and title.endswith('.pdf'):
                 records.append(Record(title=title, link=link))
-        # Navigate to next page (will fail silently on the last page)
+        # Advance to next page; break silently when no next link
+        next_link = page.locator('xpath=//*[@id="manageDocument_next"]/a')
         try:
-            driver.find_element(By.XPATH, '//*[@id="manageDocument_next"]/a').click()
+            if next_link.count() == 0:
+                break
+            next_link.first.click()
+            page.wait_for_load_state('networkidle')
             time.sleep(5)
         except Exception:
             break
@@ -56,29 +52,38 @@ def _collect_batch_records(driver, wait, batch_id: str, n_files: int) -> list[Re
     return records
 
 
-def _assign_one(driver, wait, record: Record, first_name: str, last_name: str) -> None:
+def _assign_one(page: Page, record: Record, first_name: str, last_name: str) -> None:
     def _do():
-        driver.get(record.link)
-        wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="searchPerson"]'))).click()
-        wait.until(EC.visibility_of_element_located((By.ID, 'userFirstName'))).send_keys(first_name)
-        wait.until(EC.visibility_of_element_located((By.ID, 'userLastName'))).send_keys(last_name)
-        wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="search"]'))).click()
-        wait.until(EC.visibility_of_element_located(
-            (By.XPATH, '//*[@id="listAssign"]/tbody/tr/td[5]/a/button')
-        )).click()
+        page.goto(record.link)
+        page.locator('#searchPerson').click()
+        page.locator('#userFirstName').fill(first_name)
+        page.locator('#userLastName').fill(last_name)
+        page.locator('#search').click()
+        page.locator('xpath=//*[@id="listAssign"]/tbody/tr/td[5]/a/button').click()
         time.sleep(1)
 
-    _retry(_do)
+    retry(_do)
 
 
-def assign_signee(driver, wait, first_name: str, last_name: str, batch_id: str, n_files: int) -> None:
-    print(f"\n[Assign] Collecting batch '{batch_id}' documents ({n_files} file(s), "
-          f"{(n_files + 24) // 25} page(s))...")
-    records = _collect_batch_records(driver, wait, batch_id, n_files)
-    print(f"[Assign] Found {len(records)} document(s). Assigning to {first_name} {last_name}...")
+def assign_signee(
+    page: Page,
+    first_name: str,
+    last_name: str,
+    batch_id: str,
+    n_files: int,
+    progress: Progress | None = None,
+    task_id: TaskID | None = None,
+    overall_task_id: TaskID | None = None,
+) -> None:
+    records = _collect_batch_records(page, batch_id, n_files)
 
-    for i, record in enumerate(records):
-        _assign_one(driver, wait, record, first_name, last_name)
-        print(f"  Assigned [{i + 1}/{len(records)}] {record.title}")
+    # Re-target the assign task to the actual record count if the caller passed one in
+    if progress is not None and task_id is not None:
+        progress.update(task_id, total=len(records))
 
-    print("[Assign] Done.")
+    for record in records:
+        _assign_one(page, record, first_name, last_name)
+        if progress is not None and task_id is not None:
+            progress.advance(task_id)
+        if progress is not None and overall_task_id is not None:
+            progress.advance(overall_task_id)

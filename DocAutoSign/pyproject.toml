@@ -1,13 +1,18 @@
 [project]
 name = "docautosign"
-version = "0.1.0"
+version = "0.2.0"
 description = "Automates PDF upload, signing, and download via e-sign.buu.ac.th"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4==4.14.3",
     "lxml==6.1.0",
+    "playwright>=1.59.0",
     "python-dotenv==1.2.2",
     "pyyaml==6.0.3",
-    "selenium==4.40.0",
+    "rich>=15.0.0",
+    "typer>=0.25.1",
 ]
+
+[project.scripts]
+docautosign = "cli:app"

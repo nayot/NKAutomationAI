@@ -4,3 +4,16 @@ signee:
 
 input_dir: ~/Downloads/CWIE-Pending
 download_dir: ~/Downloads/CWIE-Signed
+
+browser:
+  headless: true
+  viewport:
+    width: 1920
+    height: 1080
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+timing:
+  default_timeout_ms: 30000
+  navigation_timeout_ms: 60000
+  short_sleep: 1.0
+  long_sleep: 2.0
