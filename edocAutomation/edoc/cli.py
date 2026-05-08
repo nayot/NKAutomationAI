@@ -18,7 +18,7 @@ from rich.progress import (
 )
 
 from edoc.analyzer import AnalyzerError, analyze, save_history
-from edoc.browser import login, navigate_to_inbox
+from edoc.browser import login, navigate_to_inbox, open_page
 from edoc.config import Config, ConfigError, load_config
 from edoc.docfile import (
     DEFAULT_COMMAND,
@@ -101,8 +101,7 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
         console.print(f"Loaded {len(docs)} cached documents from {DOCUMENTS_DATA_FILE}")
     else:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=config.headless)
-            page = await browser.new_page()
+            browser, _, page = await open_page(p, config.headless)
             try:
                 with console.status("[bold]Step 1/3 — Logging in & navigating to inbox..."):
                     await login(page, config.username, config.password)
@@ -179,8 +178,7 @@ async def _cmd_sign(args: argparse.Namespace, config: Config) -> int:
 
     results: list[SignResult] = []
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=config.headless)
-        page = await browser.new_page()
+        browser, _, page = await open_page(p, config.headless)
         try:
             with console.status("[bold]Step 1/2 — Logging in & navigating to inbox..."):
                 await login(page, config.username, config.password)
