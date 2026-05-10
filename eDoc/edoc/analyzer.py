@@ -8,11 +8,10 @@ from json_repair import repair_json
 from edoc.config import DEFAULT_COMMAND
 
 HISTORY_FILE = "signing_history.json"
-AI_MODEL = "claude-sonnet-4-6"
 AI_MAX_TOKENS = 64000
 
 SYSTEM_PROMPT_BASE = """\
-You are an assistant helping a Thai university administrator prioritize document signing.
+You are an assistant helping a Thai university administrator prioritize and annotate document signing.
 Given a list of documents with their titles and recommendation notes, return a JSON array (no prose, no markdown fences).
 You MUST include every single document from the input — do not omit any.
 
@@ -22,12 +21,28 @@ Each element must have:
   "title"   – string, copied from input
   "summary" – one Thai sentence summarising the recommendation notes
   "reason"  – one Thai sentence explaining the rank
+  "command" – the Thai "คำสั่งการ" phrase to write into the sign-confirm dialog (see guidance below)
 
 Rank by:
 1. Urgency (deadlines, time-sensitive language)
 2. Seniority of sender
 3. Topic importance (financial, legal, administrative)
-4. Date received (older first as tiebreaker)"""
+4. Date received (older first as tiebreaker)
+
+Command ("คำสั่งการ") guidance:
+- Prefer one of the canonical short leading verbs when they fit:
+  * "ดำเนินการตามเสนอ" – default; proceed as the proposer recommended
+  * "ทราบ" – purely informational, no action needed
+  * "อนุมัติ" – formally authorize (typically financial or HR approvals)
+  * "พิจารณา" – delegate for further consideration
+- HARD RULE: do NOT start a command with "เห็นชอบ". The eDoc system treats it as a
+  forwarding workflow that opens an extra recipient dropdown this automation cannot fill,
+  and the sign dialog will silently fail. If you would have written "เห็นชอบ…", rewrite
+  it as "ทราบและ…" (or "ดำเนินการตามเสนอ" if no further routing is needed).
+- When the notes call for delegation or naming people (e.g. nominating committee members,
+  routing to a specific office), compose a custom command that combines a canonical leading
+  verb (above) with the specifics, following the patterns in the user's history examples below.
+- When uncertain, use "ดำเนินการตามเสนอ"."""
 
 
 class AnalyzerError(Exception):
@@ -72,20 +87,20 @@ def _build_user_prompt(docs: list[dict]) -> str:
         lines.append(f"data_id: {d['data_id']}")
         lines.append(f"title: {d['title']}")
         if d.get("notes"):
-            lines.append(f"notes: {d['notes'][:150]}")
+            lines.append(f"notes: {d['notes'][:500]}")
         lines.append("")
     return "\n".join(lines)
 
 
-def analyze(docs: list[dict]) -> list[dict]:
+def analyze(docs: list[dict], model: str) -> list[dict]:
     """Send docs to Claude, return ranked list with rank/data_id/title/summary/reason/command.
-    Each item's `command` defaults to DEFAULT_COMMAND; user edits via documents.md."""
+    The AI suggests `command` per document; falls back to DEFAULT_COMMAND if omitted."""
     history = load_history()
-    logging.info("AI analysis: %d docs, %d history entries", len(docs), len(history))
+    logging.info("AI analysis: %d docs, %d history entries, model=%s", len(docs), len(history), model)
 
     client = anthropic.Anthropic()
     with client.messages.stream(
-        model=AI_MODEL,
+        model=model,
         max_tokens=AI_MAX_TOKENS,
         system=_build_system_prompt(history),
         messages=[{"role": "user", "content": _build_user_prompt(docs)}],
@@ -112,7 +127,11 @@ def analyze(docs: list[dict]) -> list[dict]:
 
     for item in parsed:
         item["data_id"] = str(item["data_id"])
-        item.setdefault("command", DEFAULT_COMMAND)
+        cmd = (item.get("command") or "").strip()
+        if not cmd:
+            logging.warning("AI omitted command for %s; falling back to default", item["data_id"])
+            cmd = DEFAULT_COMMAND
+        item["command"] = cmd
 
     suggested = sorted(parsed, key=lambda x: x["rank"])
     if len(suggested) != len(docs):

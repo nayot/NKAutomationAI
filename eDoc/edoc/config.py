@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 URL = "https://doc.buu.ac.th/docweb/v2/"
 DEFAULT_COMMAND = "ดำเนินการตามเสนอ"
+DEFAULT_AI_MODEL = "claude-haiku-4-5-20251001"
 
 
 class ConfigError(Exception):
@@ -18,6 +19,7 @@ class Config:
     inbox: str
     anthropic_api_key: str
     headless: bool
+    ai_model: str
 
 
 def _parse_bool(value: str) -> bool:
@@ -47,10 +49,13 @@ def load_config(headless_override: bool | None = None, inbox_override: str | Non
         env_headless = os.getenv("HEADLESS")
         headless = _parse_bool(env_headless) if env_headless else False
 
+    ai_model = os.getenv("EDOC_AI_MODEL", "").strip() or DEFAULT_AI_MODEL
+
     return Config(
         username=username,
         password=password,
         inbox=inbox,
         anthropic_api_key=api_key,
         headless=headless,
+        ai_model=ai_model,
     )

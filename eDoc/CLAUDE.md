@@ -157,6 +157,11 @@ eDoc/
 ---
 
 ## AI Analysis Prompt (Phase 5)
+The AI also suggests the per-document `คำสั่งการ` (command), grounded in the few-shot
+history of past user-approved commands. Model is configurable via `EDOC_AI_MODEL` in `.env`
+(default: `claude-haiku-4-5-20251001`). Live system prompt lives in
+[edoc/analyzer.py](edoc/analyzer.py) — edit there, not here.
+
 When calling Claude API for document analysis, use this system prompt:
 
 ```
@@ -171,6 +176,7 @@ suggest the optimal signing order based on:
 Respond in Thai. For each document, provide:
 - Recommended rank
 - One-sentence reason for the ranking
+- Suggested คำสั่งการ
 ```
 
 ---

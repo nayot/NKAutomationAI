@@ -68,13 +68,13 @@ def write_queue(ranked: list[dict], path: str, inbox_name: str) -> None:
         lines.append("")
         lines.append(f"## {item['rank']}. {title}")
         lines.append("")
+        if item.get("summary"):
+            lines.append(f"- **Summary:** {item['summary']}")
         lines.append(f"- **Data ID:** `{item['data_id']}`")
         lines.append("- **Action:** `signing`")
         lines.append(f"- **Command:** {item.get('command', DEFAULT_COMMAND)}")
         if item.get("reason"):
             lines.append(f"- **AI reasoning:** {item['reason']}")
-        if item.get("summary"):
-            lines.append(f"- **Summary:** {item['summary']}")
         lines.append("")
 
     Path(path).write_text("\n".join(lines), encoding="utf-8")

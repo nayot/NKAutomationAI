@@ -132,11 +132,11 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
         console=console,
     ) as ai_progress:
         ai_progress.add_task(
-            f"[cyan]Step 3/3 — Analyzing {len(docs)} documents with Claude",
+            f"[cyan]Step 3/3 — Analyzing {len(docs)} documents with {config.ai_model}",
             total=None,
         )
         try:
-            ranked = analyze(docs)
+            ranked = analyze(docs, model=config.ai_model)
         except AnalyzerError as e:
             console.print(f"[red]AI analysis failed:[/red] {e}")
             return EXIT_RUNTIME

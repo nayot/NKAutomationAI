@@ -15,9 +15,11 @@ logging.basicConfig(
 
 HISTORY_FILE = "signing_history.json"
 DEFAULT_COMMAND = "ดำเนินการตามเสนอ"
+DEFAULT_AI_MODEL = "claude-haiku-4-5-20251001"
+AI_MODEL = os.getenv("EDOC_AI_MODEL", "").strip() or DEFAULT_AI_MODEL
 
 SYSTEM_PROMPT_BASE = """\
-You are an assistant helping a Thai university administrator prioritize document signing.
+You are an assistant helping a Thai university administrator prioritize and annotate document signing.
 Given a list of documents with their titles and recommendation notes, return a JSON array (no prose, no markdown fences).
 You MUST include every single document from the input — do not omit any.
 
@@ -27,12 +29,28 @@ Each element must have:
   "title"   – string, copied from input
   "summary" – one Thai sentence summarising the recommendation notes
   "reason"  – one Thai sentence explaining the rank
+  "command" – the Thai "คำสั่งการ" phrase to write into the sign-confirm dialog (see guidance below)
 
 Rank by:
 1. Urgency (deadlines, time-sensitive language)
 2. Seniority of sender
 3. Topic importance (financial, legal, administrative)
-4. Date received (older first as tiebreaker)"""
+4. Date received (older first as tiebreaker)
+
+Command ("คำสั่งการ") guidance:
+- Prefer one of the canonical short leading verbs when they fit:
+  * "ดำเนินการตามเสนอ" – default; proceed as the proposer recommended
+  * "ทราบ" – purely informational, no action needed
+  * "อนุมัติ" – formally authorize (typically financial or HR approvals)
+  * "พิจารณา" – delegate for further consideration
+- HARD RULE: do NOT start a command with "เห็นชอบ". The eDoc system treats it as a
+  forwarding workflow that opens an extra recipient dropdown this automation cannot fill,
+  and the sign dialog will silently fail. If you would have written "เห็นชอบ…", rewrite
+  it as "ทราบและ…" (or "ดำเนินการตามเสนอ" if no further routing is needed).
+- When the notes call for delegation or naming people (e.g. nominating committee members,
+  routing to a specific office), compose a custom command that combines a canonical leading
+  verb (above) with the specifics, following the patterns in the user's history examples below.
+- When uncertain, use "ดำเนินการตามเสนอ"."""
 
 def load_history():
     if not os.path.exists(HISTORY_FILE):
@@ -69,7 +87,7 @@ def build_prompt(docs):
         lines.append(f"data_id: {d['data_id']}")
         lines.append(f"title: {d['title']}")
         if d.get("notes"):
-            lines.append(f"notes: {d['notes'][:150]}")
+            lines.append(f"notes: {d['notes'][:500]}")
         lines.append("")
     return "\n".join(lines)
 
@@ -90,9 +108,11 @@ def main():
     if history:
         print(f"(ใช้ประวัติการลงนาม {len(history)} รายการเป็นแนวทาง)\n")
 
+    print(f"(model: {AI_MODEL})\n")
+    logging.info("AI analysis using model %s", AI_MODEL)
     client = anthropic.Anthropic()
     with client.messages.stream(
-        model="claude-sonnet-4-6",
+        model=AI_MODEL,
         max_tokens=64000,
         system=build_system_prompt(history),
         messages=[{"role": "user", "content": build_prompt(sample)}],
@@ -125,28 +145,34 @@ def main():
             f.write(raw)
         return
 
+    for item in suggested:
+        cmd = (item.get("command") or "").strip()
+        item["command"] = cmd or DEFAULT_COMMAND
+
     print("=== ลำดับการลงนามที่แนะนำ ===\n")
     for item in suggested:
         print(f"[{item['rank']}] {item['title']}")
         if item.get("summary"):
             print(f"     สรุป:   {item['summary']}")
         print(f"     เหตุผล: {item.get('reason', '-')}")
+        print(f"     คำสั่งการ (AI): {item['command']}")
         print()
 
     print("=" * 50)
-    print(f"ยืนยันคำสั่งการ (Enter = \"{DEFAULT_COMMAND}\", พิมพ์ใหม่ = กำหนดเอง, 's' = ข้าม)\n")
+    print("ยืนยันคำสั่งการ (Enter = ใช้คำสั่งที่ AI แนะนำ, พิมพ์ใหม่ = กำหนดเอง, 's' = ข้าม)\n")
 
     approved = []
     for item in suggested:
+        suggested_cmd = item["command"]
         print(f"[{item['rank']}] {item['title'][:80]}")
         if item.get("summary"):
             print(f"     สรุป:   {item['summary']}")
-        user_input = input(f"     คำสั่งการ [{DEFAULT_COMMAND}]: ").strip()
+        user_input = input(f"     คำสั่งการ [{suggested_cmd}]: ").strip()
         if user_input.lower() == "s":
             print("     → ข้ามเอกสารนี้\n")
             logging.info("Skipped: %s", item['title'])
             continue
-        final_command = user_input if user_input else DEFAULT_COMMAND
+        final_command = user_input if user_input else suggested_cmd
         item["final_command"] = final_command
         approved.append(item)
         print(f"     → ยืนยัน: \"{final_command}\"\n")

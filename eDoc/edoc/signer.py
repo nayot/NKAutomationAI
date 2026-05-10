@@ -15,10 +15,29 @@ class SignResult:
     error: str | None = None
 
 
+async def _dismiss_leftover_modal(page, data_id: str) -> None:
+    """If a sign-confirm modal is still up from a previous doc, cancel it before continuing.
+    The modal lives on the main page; HideContentFrame() doesn't touch it."""
+    try:
+        cancel_btn = await page.query_selector("#btnSignConfirmCancel")
+        if not cancel_btn or not await cancel_btn.is_visible():
+            return
+        logging.warning("Leftover sign-confirm modal detected; cancelling before opening %s", data_id)
+        await page.click("#btnSignConfirmCancel")
+        await page.wait_for_selector("#btnSignConfirmOK", state="hidden", timeout=5000)
+        await page.evaluate("VN.V2.App.Home.Page.HideContentFrame()")
+        await page.wait_for_load_state("networkidle")
+        await asyncio.sleep(1.0)
+    except Exception as e:
+        logging.warning("Failed to dismiss leftover modal cleanly: %s", e)
+
+
 async def _open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
     data_id = doc["data_id"]
     command = doc["command"]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    await _dismiss_leftover_modal(page, data_id)
 
     content_frame = None
     for attempt in range(3):
@@ -70,12 +89,23 @@ async def _open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
 async def _confirm(page, dry_run: bool, data_id: str, ts: str) -> None:
     if dry_run:
         await page.click("#btnSignConfirmCancel")
-        logging.info("[DRY_RUN] Cancelled signing for %s", data_id)
+        action = "DRY_RUN cancelled"
     else:
         await page.click("#btnSignConfirmOK")
-        logging.info("Signed %s", data_id)
+        action = "Signed"
     await page.wait_for_load_state("networkidle")
+
+    # Verify the modal actually closed. networkidle alone is not enough — the dialog
+    # is dismissed via JS on the main page and can stay visible if the click misfired
+    # or validation rejected it. A leftover modal blocks every subsequent doc.
+    try:
+        await page.wait_for_selector("#btnSignConfirmOK", state="hidden", timeout=10000)
+    except Exception:
+        await page.screenshot(path=f"screenshots/phase5_modal_stuck_{data_id}_{ts}.png")
+        raise RuntimeError(f"Sign-confirm dialog did not close after {action} for {data_id}")
+
     await page.screenshot(path=f"screenshots/phase5_after_{data_id}_{ts}.png")
+    logging.info("%s %s", action, data_id)
     await page.evaluate("VN.V2.App.Home.Page.HideContentFrame()")
     await page.wait_for_load_state("networkidle")
     await asyncio.sleep(1.5)
