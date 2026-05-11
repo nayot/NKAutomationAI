@@ -51,17 +51,31 @@ def _root(
         None, "--version", callback=_version_callback, is_eager=True,
         help="Show version and exit.",
     ),
+    config: Path = typer.Option(
+        DEFAULT_CONFIG, "--config", "-c", help="Path to config.yaml.",
+    ),
+    input_dir: Optional[Path] = typer.Option(
+        None, "--input-dir", help="Override input_dir from config.yaml.",
+    ),
+    download_dir: Optional[Path] = typer.Option(
+        None, "--download-dir", help="Override download_dir from config.yaml.",
+    ),
+    headless: Optional[bool] = typer.Option(
+        None, "--headless/--headful", help="Force headless or headful mode.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the pre-flight confirmation prompt.",
+    ),
 ) -> None:
     if ctx.invoked_subcommand is None:
-        # Default subcommand is `run`. Pass explicit defaults — ctx.invoke does
-        # not resolve Typer's OptionInfo wrappers, so we have to spell them out.
+        # Default subcommand is `run`. Forward root-level options.
         ctx.invoke(
             run,
-            config=DEFAULT_CONFIG,
-            input_dir=None,
-            download_dir=None,
-            headless=None,
-            yes=False,
+            config=config,
+            input_dir=input_dir,
+            download_dir=download_dir,
+            headless=headless,
+            yes=yes,
         )
 
 

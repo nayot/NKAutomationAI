@@ -15,9 +15,11 @@ def browser_session(
     """Yield (page, context). Context has accept_downloads=True for expect_download()."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
+        # Headless requires a real desktop viewport or the portal rejects the session.
+        # Headful: let Playwright resize with the window (viewport=None).
         context = browser.new_context(
             accept_downloads=True,
-            viewport=viewport,
+            viewport=viewport if headless else None,
             user_agent=user_agent,
         )
         context.set_default_timeout(default_timeout_ms)
