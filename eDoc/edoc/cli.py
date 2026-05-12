@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import async_playwright
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -103,9 +103,18 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
         async with async_playwright() as p:
             browser, _, page = await open_page(p, config.headless)
             try:
-                with console.status("[bold]Step 1/3 — Logging in & navigating to inbox..."):
+                with console.status("[bold]Step 1/3 — Logging in..."):
                     await login(page, config.username, config.password)
-                    await navigate_to_inbox(page, config.inbox)
+                console.print("[green]✓ Logged in successfully[/green]")
+                with console.status("[bold]Step 1/3 — Navigating to inbox..."):
+                    try:
+                        await navigate_to_inbox(page, config.inbox)
+                    except PlaywrightTimeoutError:
+                        console.print(
+                            "[bold green]กล่องรับเอกสารว่างเปล่า — "
+                            "ไม่มีเอกสารรอลงนาม ยินดีด้วย![/bold green]"
+                        )
+                        return EXIT_OK
 
                 with _make_progress() as progress:
                     task = progress.add_task("[cyan]Step 2/3 — Reading documents", total=None)
