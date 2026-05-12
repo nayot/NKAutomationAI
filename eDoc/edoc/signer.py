@@ -169,6 +169,11 @@ async def _open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
 
 
 async def _confirm(page, dry_run: bool, data_id: str, ts: str) -> None:
+    # Ensure the OK button is in the viewport before clicking — the dialog can be
+    # taller than the 900px viewport and the button scrolls out of the clickable area.
+    await page.wait_for_selector("#btnSignConfirmOK", state="visible", timeout=5000)
+    await page.locator("#btnSignConfirmOK").scroll_into_view_if_needed()
+
     if dry_run:
         await page.click("#btnSignConfirmCancel")
         action = "DRY_RUN cancelled"

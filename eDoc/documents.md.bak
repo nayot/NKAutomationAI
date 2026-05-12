@@ -1,0 +1,21 @@
+# eDoc Signing Queue
+
+**Queue Status:** `READY`
+**Generated:** 2026-05-12 15:45
+**Inbox:** คณบดีคณะวิศวกรรมศาสตร์
+**Total:** 1 documents
+
+> Review each document below. To skip one, change its **Action** from `signing` to `skip`.
+> When ready, change **Queue Status** above from `PROVISIONAL` to `READY` and save.
+> Then run `edoc --sign`.
+> Default command: ดำเนินการตามเสนอ
+
+---
+
+## 1. ขอให้รับรองรายงานการประชุมคณะกรรมการเพื่อการพัฒนามหาวิทยาลัยแห่งการสร้างผู้ประกอบการ (Entrepreneurial University) ครั้งที่ 2/2569
+
+- **Summary:** ขอให้คณบดีพิจารณารับรองรายงานการประชุมคณะกรรมการเพื่อการพัฒนามหาวิทยาลัยแห่งการสร้างผู้ประกอบการ ครั้งที่ 2/2569
+- **Data ID:** `29878999`
+- **Action:** `signing`
+- **Command:** ทราบ
+- **AI reasoning:** เป็นเรื่องการบริหารหลักของมหาวิทยาลัยที่เกี่ยวข้องกับการพัฒนาสถาบันและต้องขออนุมัติอย่างเป็นทางการ
