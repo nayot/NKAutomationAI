@@ -99,6 +99,54 @@ async def _dump_modal_state(page, data_id: str, ts: str) -> None:
         logging.warning("Failed to write modal_stuck dump %s: %s", out_path, e)
 
 
+async def _wait_for_doc_content_ready(content_frame, data_id: str, timeout_ms: int = 60000) -> None:
+    """Block until iframeContent0 has finished loading its body (including any embedded PDF).
+
+    Failure mode without this: docs with large PDF attachments expose #btnSign before the
+    PDF is fully streamed in. Clicking through opens the sign-confirm modal visually, but
+    the OK button's postback handler is bound to form state that's still settling — the
+    click lands as a no-op and the modal sits there until our outer hidden-wait gives up.
+
+    We can't trust the frame's `load` event alone because PDFs are typically rendered in
+    <embed>/<iframe>/<object> tags whose own load doesn't always bubble. Instead, we wait
+    for document.readyState === 'complete' AND for Performance API resource count to be
+    stable for ~1.5s (proxy for "no more bytes coming in")."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_ms / 1000
+
+    try:
+        await content_frame.wait_for_load_state("load", timeout=timeout_ms)
+    except Exception as e:
+        logging.warning("Content frame load state did not fire for %s: %s", data_id, e)
+
+    stable_for = 1.5
+    last_count = -1
+    last_change = loop.time()
+    while loop.time() < deadline:
+        try:
+            ready, count = await content_frame.evaluate(
+                "() => [document.readyState, performance.getEntriesByType('resource').length]"
+            )
+        except Exception as e:
+            logging.warning("readiness probe failed mid-wait for %s: %s", data_id, e)
+            await asyncio.sleep(0.3)
+            continue
+
+        now = loop.time()
+        if count != last_count:
+            last_count = count
+            last_change = now
+        if ready == "complete" and (now - last_change) >= stable_for:
+            logging.info("Content settled for %s (%d resources)", data_id, count)
+            return
+        await asyncio.sleep(0.25)
+
+    logging.warning(
+        "Content frame did not settle within %ds for %s — proceeding anyway",
+        timeout_ms // 1000, data_id,
+    )
+
+
 async def _dismiss_leftover_modal(page, data_id: str) -> None:
     """If a sign-confirm modal is still up from a previous doc, cancel it before continuing.
     The modal lives on the main page; HideContentFrame() doesn't touch it."""
@@ -150,6 +198,10 @@ async def _open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
     if not content_frame:
         raise RuntimeError(f"Content frame missing for {doc['title']}")
 
+    # Wait for the doc body (PDF included) to finish loading before clicking ลงนาม.
+    # Without this, large-PDF docs leave the sign-confirm modal stuck (OK click no-ops).
+    await _wait_for_doc_content_ready(content_frame, data_id)
+
     for sign_attempt in range(3):
         await content_frame.evaluate("document.getElementById('btnSign').click()")
         logging.info("Clicked btnSign (attempt %d): %s", sign_attempt + 1, data_id)
@@ -164,6 +216,13 @@ async def _open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
 
     await page.click("#optSignConfirmOptions0")
     await page.fill("#txtTargetTypeNote", command)
+    # page.fill focuses+types but does NOT blur. .NET often runs onchange/onblur
+    # handlers that commit state before the postback fires — without this blur,
+    # OK lands on a half-initialized form and the modal stays open.
+    await page.evaluate(
+        "() => { const e = document.getElementById('txtTargetTypeNote');"
+        " if (e) { e.dispatchEvent(new Event('change', {bubbles: true})); e.blur(); } }"
+    )
     await page.screenshot(path=f"screenshots/phase5_form_{data_id}_{ts}.png")
     return {"data_id": data_id, "ts": ts}
 
@@ -184,8 +243,11 @@ async def _confirm(page, dry_run: bool, data_id: str, ts: str) -> None:
     # The modal disappearing is the only reliable "OK was accepted" signal. networkidle
     # is unsafe here — the app keepalive prevents it ever settling on some docs, which
     # silently burns 30s before this wait even starts.
+    # Timeout is generous (90s): docs with large PDF attachments take a long time on
+    # the server side — the modal stays up until the backend finishes re-saving the
+    # signed PDF, and we saw real signs succeed well past 15s on those docs.
     try:
-        await page.wait_for_selector("#btnSignConfirmOK", state="hidden", timeout=15000)
+        await page.wait_for_selector("#btnSignConfirmOK", state="hidden", timeout=90000)
     except Exception:
         await page.screenshot(path=f"screenshots/phase5_modal_stuck_{data_id}_{ts}.png")
         await _dump_modal_state(page, data_id, ts)

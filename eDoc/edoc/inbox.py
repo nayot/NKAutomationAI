@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Callable, Optional
@@ -34,19 +35,42 @@ async def read_document_content(page, doc: dict) -> dict:
     await inbox_frame.click(f"a[data-id='{doc['data_id']}']", force=True)
     logging.info("Opened: %s", doc["title"])
 
-    content_frame = page.frame(name="iframeContent0")
-    try:
-        await content_frame.wait_for_selector(".DocNoteContent", timeout=10000)
-    except Exception:
-        pass
-
-    note_els = await content_frame.query_selector_all(".DocNoteContent")
-    parts = [(await el.inner_text()).strip() for el in note_els]
-    doc["notes"] = "\n---\n".join(p for p in parts if p)
+    # The .NET app sometimes re-renders iframeContent0 mid-read, destroying its
+    # execution context and invalidating any ElementHandles. Retry a few times and
+    # use locator.all_inner_texts() — it resolves+reads atomically in the browser,
+    # so stale handles can't leak out between Playwright calls.
+    notes = ""
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            content_frame = page.frame(name="iframeContent0")
+            if content_frame is None:
+                await asyncio.sleep(0.5)
+                continue
+            try:
+                await content_frame.wait_for_selector(".DocNoteContent", timeout=10000)
+            except Exception:
+                pass
+            parts = await content_frame.locator(".DocNoteContent").all_inner_texts()
+            notes = "\n---\n".join(p.strip() for p in parts if p.strip())
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            logging.warning(
+                "Note read attempt %d failed for %s: %s", attempt + 1, doc["data_id"], e
+            )
+            await asyncio.sleep(0.5 + attempt * 0.5)
+    if last_err is not None:
+        logging.error("Gave up reading notes for %s: %s", doc["data_id"], last_err)
+    doc["notes"] = notes
 
     await page.screenshot(path=f"screenshots/phase3_doc_{doc['data_id']}.png")
     await page.evaluate("VN.V2.App.Home.Page.HideContentFrame()")
-    await page.wait_for_load_state("networkidle")
+    # Don't wait_for_load_state("networkidle"): the .NET keepalive/long-poll stream
+    # never settles on some docs and burns the 30s timeout (same fix as signer.py
+    # in 2dd6b37). A short sleep lets HideContentFrame finish before the next click.
+    await asyncio.sleep(0.5)
     return doc
 
 
