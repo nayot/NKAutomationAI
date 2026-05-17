@@ -73,6 +73,9 @@ def write_queue(ranked: list[dict], path: str, inbox_name: str) -> None:
         lines.append(f"- **Data ID:** `{item['data_id']}`")
         lines.append("- **Action:** `signing`")
         lines.append(f"- **Command:** {item.get('command', DEFAULT_COMMAND)}")
+        if item.get("attachment_path"):
+            p = Path(item["attachment_path"]).resolve()
+            lines.append(f"- **Attachment:** [{p.name}]({p})")
         if item.get("reason"):
             lines.append(f"- **AI reasoning:** {item['reason']}")
         lines.append("")

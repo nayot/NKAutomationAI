@@ -1,9 +1,13 @@
+import base64
+import io
 import json
 import logging
 import os
+from pathlib import Path
 
 import anthropic
 from json_repair import repair_json
+from pypdf import PdfReader, PdfWriter
 
 from edoc.config import DEFAULT_COMMAND
 
@@ -81,6 +85,52 @@ def _build_system_prompt(history: list[dict]) -> str:
     return prompt
 
 
+_ATTACHMENT_PROMPT = (
+    "สรุปเนื้อหาสำคัญของเอกสารแนบนี้เป็นภาษาไทย ไม่เกิน 3 ประโยค "
+    "โดยเน้นประเด็นที่เกี่ยวข้องกับการลงนาม เช่น วัตถุประสงค์ งบประมาณ กำหนดเวลา"
+)
+
+
+def _slice_pdf_bytes(path: str, max_pages: int = 3) -> bytes:
+    reader = PdfReader(path)
+    writer = PdfWriter()
+    for i, page in enumerate(reader.pages):
+        if i >= max_pages:
+            break
+        writer.add_page(page)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def _summarize_attachment(client: anthropic.Anthropic, doc: dict, model: str) -> str | None:
+    path = doc.get("attachment_path")
+    if not path or not Path(path).exists():
+        return None
+    try:
+        pdf_bytes = _slice_pdf_bytes(path)
+    except Exception as e:
+        logging.warning("Could not slice PDF %s: %s", path, e)
+        return None
+
+    pdf_b64 = base64.standard_b64encode(pdf_bytes).decode()
+    response = client.messages.create(
+        model=model,
+        max_tokens=512,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64},
+                },
+                {"type": "text", "text": _ATTACHMENT_PROMPT},
+            ],
+        }],
+    )
+    return response.content[0].text.strip()
+
+
 def _build_user_prompt(docs: list[dict]) -> str:
     lines = []
     for d in docs:
@@ -88,6 +138,8 @@ def _build_user_prompt(docs: list[dict]) -> str:
         lines.append(f"title: {d['title']}")
         if d.get("notes"):
             lines.append(f"notes: {d['notes'][:500]}")
+        if d.get("attachment_summary"):
+            lines.append(f"attachment_summary: {d['attachment_summary']}")
         lines.append("")
     return "\n".join(lines)
 
@@ -99,6 +151,20 @@ def analyze(docs: list[dict], model: str) -> list[dict]:
     logging.info("AI analysis: %d docs, %d history entries, model=%s", len(docs), len(history), model)
 
     client = anthropic.Anthropic()
+
+    # Summarize PDF attachments and enrich each doc before ranking
+    docs_with_att = [d for d in docs if d.get("attachment_path")]
+    if docs_with_att:
+        print(f"\n── Attachment analysis ({len(docs_with_att)} file(s), first 3 pages each) ──")
+        for doc in docs_with_att:
+            summary = _summarize_attachment(client, doc, model)
+            doc["attachment_summary"] = summary
+            if summary:
+                print(f"[{doc['data_id']}] {doc['title'][:60]}")
+                print(f"  PDF: {summary}\n")
+                logging.info("Attachment summary %s: %s", doc["data_id"], summary[:100])
+            else:
+                print(f"[{doc['data_id']}] attachment could not be read\n")
     with client.messages.stream(
         model=model,
         max_tokens=AI_MAX_TOKENS,
@@ -136,4 +202,12 @@ def analyze(docs: list[dict], model: str) -> list[dict]:
     suggested = sorted(parsed, key=lambda x: x["rank"])
     if len(suggested) != len(docs):
         logging.warning("AI returned %d of %d documents", len(suggested), len(docs))
+
+    # Re-attach fields that Claude doesn't echo back
+    att_map = {d["data_id"]: d.get("attachment_path") for d in docs}
+    for item in suggested:
+        path = att_map.get(item["data_id"])
+        if path:
+            item["attachment_path"] = path
+
     return suggested

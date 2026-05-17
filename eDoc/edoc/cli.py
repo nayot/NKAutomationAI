@@ -103,10 +103,10 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
         async with async_playwright() as p:
             browser, _, page = await open_page(p, config.headless)
             try:
-                with console.status("[bold]Step 1/3 — Logging in..."):
+                with console.status("[bold]Step 1/4 — Logging in..."):
                     await login(page, config.username, config.password)
                 console.print("[green]✓ Logged in successfully[/green]")
-                with console.status("[bold]Step 1/3 — Navigating to inbox..."):
+                with console.status("[bold]Step 1/4 — Navigating to inbox..."):
                     try:
                         await navigate_to_inbox(page, config.inbox)
                     except PlaywrightTimeoutError:
@@ -117,15 +117,15 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
                         return EXIT_OK
 
                 with _make_progress() as progress:
-                    task = progress.add_task("[cyan]Step 2/3 — Reading documents", total=None)
+                    task = progress.add_task("[cyan]Step 2/4 — Reading documents & attachments", total=None)
 
                     def update(current: int, total: int, label: str) -> None:
                         if progress.tasks[task].total is None:
                             progress.update(task, total=total)
-                        progress.update(task, completed=current, description=f"[cyan]Step 2/3 — {label}")
+                        progress.update(task, completed=current, description=f"[cyan]Step 2/4 — {label}")
 
                     docs = await scrape_documents(page, limit=args.limit, progress=update)
-                    progress.update(task, description=f"[cyan]Step 2/3 — Read {len(docs)} documents")
+                    progress.update(task, description=f"[cyan]Step 2/4 — Read {len(docs)} documents")
             finally:
                 await browser.close()
 
@@ -141,7 +141,7 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
         console=console,
     ) as ai_progress:
         ai_progress.add_task(
-            f"[cyan]Step 3/3 — Analyzing {len(docs)} documents with {config.ai_model}",
+            f"[cyan]Step 3–4/4 — Attachments + ranking ({len(docs)} docs) with {config.ai_model}",
             total=None,
         )
         try:
@@ -239,6 +239,15 @@ async def _cmd_sign(args: argparse.Namespace, config: Config) -> int:
             src.rename(dest)
             console.print(f"Archived queue → [bold]{dest}[/bold]")
             logging.info("Archived queue %s → %s", src, dest)
+
+        tmp_dir = Path("tmp")
+        if tmp_dir.exists():
+            removed = [f for f in tmp_dir.iterdir() if f.is_file()]
+            for f in removed:
+                f.unlink()
+            if removed:
+                console.print(f"Cleaned tmp/ ({len(removed)} file(s) removed)")
+                logging.info("Cleaned tmp/: %d files removed", len(removed))
 
     return EXIT_RUNTIME if failures else EXIT_OK
 

@@ -1,9 +1,13 @@
+import base64
+import io
 import json
 import os
 import logging
+from pathlib import Path
 from dotenv import load_dotenv
 import anthropic
 from json_repair import repair_json
+from pypdf import PdfReader, PdfWriter
 
 load_dotenv()
 
@@ -81,6 +85,53 @@ def build_system_prompt(history):
         prompt += f"\n\nตัวอย่างคำสั่งการที่ผู้ใช้เคยอนุมัติไว้ (ใช้เป็นแนวทาง):\n{examples}"
     return prompt
 
+def slice_pdf_bytes(path: str, max_pages: int = 3) -> bytes:
+    reader = PdfReader(path)
+    writer = PdfWriter()
+    for i, page in enumerate(reader.pages):
+        if i >= max_pages:
+            break
+        writer.add_page(page)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+ATTACHMENT_PROMPT = (
+    "สรุปเนื้อหาสำคัญของเอกสารแนบนี้เป็นภาษาไทย ไม่เกิน 3 ประโยค "
+    "โดยเน้นประเด็นที่เกี่ยวข้องกับการลงนาม เช่น วัตถุประสงค์ งบประมาณ กำหนดเวลา"
+)
+
+def analyze_attachment(client, doc, model):
+    path = doc.get("attachment_path")
+    if not path or not Path(path).exists():
+        return None
+    try:
+        pdf_bytes = slice_pdf_bytes(path)
+    except Exception as e:
+        logging.warning("Could not slice PDF %s: %s", path, e)
+        return None
+
+    pdf_b64 = base64.standard_b64encode(pdf_bytes).decode()
+    response = client.messages.create(
+        model=model,
+        max_tokens=512,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_b64,
+                    },
+                },
+                {"type": "text", "text": ATTACHMENT_PROMPT},
+            ],
+        }],
+    )
+    return response.content[0].text.strip()
+
 def build_prompt(docs):
     lines = []
     for d in docs:
@@ -88,6 +139,8 @@ def build_prompt(docs):
         lines.append(f"title: {d['title']}")
         if d.get("notes"):
             lines.append(f"notes: {d['notes'][:500]}")
+        if d.get("attachment_summary"):
+            lines.append(f"attachment_summary: {d['attachment_summary']}")
         lines.append("")
     return "\n".join(lines)
 
@@ -111,6 +164,24 @@ def main():
     print(f"(model: {AI_MODEL})\n")
     logging.info("AI analysis using model %s", AI_MODEL)
     client = anthropic.Anthropic()
+
+    # ── Attachment analysis ───────────────────────────────────────────────────
+    docs_with_att = [d for d in sample if d.get("attachment_path")]
+    if docs_with_att:
+        print(f"── Analyzing {len(docs_with_att)} attachment(s) (first 3 pages each) ──\n")
+        for doc in docs_with_att:
+            summary = analyze_attachment(client, doc, AI_MODEL)
+            doc["attachment_summary"] = summary
+            if summary:
+                print(f"[{doc['data_id']}] {doc['title'][:60]}")
+                print(f"  PDF summary: {summary}\n")
+                logging.info("Attachment summary for %s: %s", doc["data_id"], summary[:100])
+            else:
+                print(f"[{doc['data_id']}] attachment could not be summarised\n")
+    else:
+        print("(no attachments found in documents_data.json)\n")
+    # ─────────────────────────────────────────────────────────────────────────
+
     with client.messages.stream(
         model=AI_MODEL,
         max_tokens=64000,

@@ -1,9 +1,12 @@
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Callable, Optional
 
 from edoc.browser import get_inbox_frame
+
+TMP_DIR = Path("tmp")
 
 ProgressCallback = Callable[[int, int, str], None]
 
@@ -28,6 +31,42 @@ async def list_documents(page) -> list[dict]:
             "title": (await el.inner_text()).strip(),
         })
     return docs
+
+
+async def download_attachment(page, doc: dict) -> str | None:
+    """Download the first link from td.picture in iframeContent0 to tmp/<data_id>.pdf."""
+    content_frame = page.frame(name="iframeContent0")
+    if content_frame is None:
+        return None
+    try:
+        await content_frame.wait_for_selector("td.picture a", timeout=5000)
+    except Exception:
+        return None
+
+    anchors = await content_frame.query_selector_all("td.picture a")
+    if not anchors:
+        return None
+
+    href = await anchors[0].get_attribute("href")
+    if not href:
+        return None
+
+    if href.startswith("/"):
+        download_url = "https://doc.buu.ac.th" + href
+    elif href.startswith("http"):
+        download_url = href
+    else:
+        download_url = content_frame.url.rsplit("/", 1)[0] + "/" + href
+
+    response = await page.context.request.get(download_url)
+    if not response.ok:
+        logging.warning("Attachment HTTP %d: %s", response.status, download_url)
+        return None
+
+    out_path = TMP_DIR / f"{doc['data_id']}.pdf"
+    out_path.write_bytes(await response.body())
+    logging.info("Attachment saved: %s (%d bytes)", out_path, out_path.stat().st_size)
+    return str(out_path)
 
 
 async def read_document_content(page, doc: dict) -> dict:
@@ -64,6 +103,7 @@ async def read_document_content(page, doc: dict) -> dict:
     if last_err is not None:
         logging.error("Gave up reading notes for %s: %s", doc["data_id"], last_err)
     doc["notes"] = notes
+    doc["attachment_path"] = await download_attachment(page, doc)
 
     await page.screenshot(path=f"screenshots/phase3_doc_{doc['data_id']}.png")
     await page.evaluate("VN.V2.App.Home.Page.HideContentFrame()")
@@ -79,8 +119,10 @@ async def scrape_documents(
     limit: int | None = None,
     progress: Optional[ProgressCallback] = None,
 ) -> list[dict]:
-    """Full scrape: list inbox + read each document's notes. Side effect: writes documents_data.json.
+    """Full scrape: list inbox + read each document's notes + download attachments.
+    Side effect: writes documents_data.json.
     If `progress` is given, it's invoked as progress(current_index, total, label) after each doc."""
+    TMP_DIR.mkdir(exist_ok=True)
     await page.screenshot(path="screenshots/phase3_01_inbox.png")
     docs = await list_documents(page)
     logging.info("Inbox lists %d documents", len(docs))

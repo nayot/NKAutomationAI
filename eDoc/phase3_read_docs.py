@@ -6,6 +6,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
+Path("tmp").mkdir(exist_ok=True)
+
 DRY_RUN = False
 
 load_dotenv()
@@ -64,6 +66,43 @@ async def get_document_list(page):
         })
     return docs
 
+async def download_attachment(page, doc):
+    """Find the first link inside td.picture in iframeContent0 and download to tmp/."""
+    content_frame = page.frame(name="iframeContent0")
+    if content_frame is None:
+        return None
+    try:
+        await content_frame.wait_for_selector("td.picture a", timeout=5000)
+    except Exception:
+        return None  # no attachment cell or no links inside it
+
+    anchors = await content_frame.query_selector_all("td.picture a")
+    if not anchors:
+        return None
+
+    href = await anchors[0].get_attribute("href")
+    if not href:
+        return None
+
+    # Resolve relative URLs
+    if href.startswith("/"):
+        download_url = "https://doc.buu.ac.th" + href
+    elif href.startswith("http"):
+        download_url = href
+    else:
+        base = content_frame.url.rsplit("/", 1)[0]
+        download_url = base + "/" + href
+
+    response = await page.context.request.get(download_url)
+    if not response.ok:
+        logging.warning("Attachment HTTP %d: %s", response.status, download_url)
+        return None
+
+    out_path = Path("tmp") / f"{doc['data_id']}.pdf"
+    out_path.write_bytes(await response.body())
+    logging.info("Attachment saved: %s (%d bytes)", out_path, out_path.stat().st_size)
+    return str(out_path)
+
 async def read_document_content(page, doc):
     inbox_frame = await get_inbox_frame(page)
     # force=True bypasses iframeContent0 overlapping the list after first doc opens
@@ -80,6 +119,8 @@ async def read_document_content(page, doc):
     note_els = await content_frame.query_selector_all(".DocNoteContent")
     parts = [(await el.inner_text()).strip() for el in note_els]
     doc["notes"] = "\n---\n".join(p for p in parts if p)
+
+    doc["attachment_path"] = await download_attachment(page, doc)
 
     await page.screenshot(path=f"screenshots/phase3_doc_{doc['data_id']}.png")
 
@@ -120,6 +161,8 @@ async def main():
             doc = await read_document_content(page, doc)
             print(f"  Read [{doc['index']}]: {doc['title'][:70]}")
             print(f"    notes preview: {doc['notes'][:120]}")
+            att = doc.get("attachment_path")
+            print(f"    attachment: {att if att else '(none)'}")
 
         with open("documents_data.json", "w", encoding="utf-8") as f:
             json.dump(docs, f, ensure_ascii=False, indent=2)
