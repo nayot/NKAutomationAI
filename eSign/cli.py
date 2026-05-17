@@ -18,7 +18,7 @@ from esign.download import download_signed
 from esign.files import generate_batch_id, rename_files
 from esign.preflight import PreflightError, render_summary, validate
 from esign.progress import make_progress
-from esign.session import login
+from esign.session import LoginCheckError, login
 from esign.sign import sign_all
 from esign.upload import upload_files
 
@@ -198,6 +198,9 @@ def run(
     except PlaywrightError as e:
         _print_error(f"Browser error: {e}")
         raise typer.Exit(code=3 if in_login_phase else 1)
+    except LoginCheckError as e:
+        _print_error(str(e))
+        raise typer.Exit(code=1)
     except typer.Exit:
         raise
     except Exception as e:
