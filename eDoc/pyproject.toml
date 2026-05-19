@@ -6,6 +6,7 @@ dependencies = [
     "playwright",
     "python-dotenv",
     "anthropic",
+    "openai>=1.50",
     "json-repair",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.29",

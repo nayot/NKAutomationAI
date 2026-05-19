@@ -145,7 +145,12 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
             total=None,
         )
         try:
-            ranked = analyze(docs, model=config.ai_model)
+            ranked = analyze(
+                docs,
+                model=config.ai_model,
+                fallback_model=config.ai_fallback_model,
+                openai_api_key=config.openai_api_key,
+            )
         except AnalyzerError as e:
             console.print(f"[red]AI analysis failed:[/red] {e}")
             return EXIT_RUNTIME

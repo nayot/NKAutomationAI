@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 URL = "https://doc.buu.ac.th/docweb/v2/"
 DEFAULT_COMMAND = "ดำเนินการตามเสนอ"
 DEFAULT_AI_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_AI_FALLBACK_MODEL = "gpt-4o-mini"
 
 
 class ConfigError(Exception):
@@ -20,6 +21,8 @@ class Config:
     anthropic_api_key: str
     headless: bool
     ai_model: str
+    openai_api_key: str | None
+    ai_fallback_model: str
 
 
 def _parse_bool(value: str) -> bool:
@@ -50,6 +53,8 @@ def load_config(headless_override: bool | None = None, inbox_override: str | Non
         headless = _parse_bool(env_headless) if env_headless else False
 
     ai_model = os.getenv("EDOC_AI_MODEL", "").strip() or DEFAULT_AI_MODEL
+    openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
+    ai_fallback_model = os.getenv("EDOC_AI_FALLBACK_MODEL", "").strip() or DEFAULT_AI_FALLBACK_MODEL
 
     return Config(
         username=username,
@@ -58,4 +63,6 @@ def load_config(headless_override: bool | None = None, inbox_override: str | Non
         anthropic_api_key=api_key,
         headless=headless,
         ai_model=ai_model,
+        openai_api_key=openai_api_key,
+        ai_fallback_model=ai_fallback_model,
     )
