@@ -197,6 +197,67 @@ async def _click_sign_confirm_ok(page, data_id: str, ts: str) -> None:
     raise RuntimeError(f"Could not click sign-confirm OK for {data_id}: {last_error}")
 
 
+async def _accept_next_dialog(page, data_id: str) -> None:
+    async def accept_dialog(dialog) -> None:
+        try:
+            logging.info(
+                "Accepting dialog while signing %s: type=%s message=%r",
+                data_id,
+                dialog.type,
+                dialog.message,
+            )
+            await dialog.accept()
+        except Exception as e:
+            logging.warning("Failed to accept dialog while signing %s: %s", data_id, e)
+
+    page.once("dialog", lambda dialog: asyncio.create_task(accept_dialog(dialog)))
+
+
+async def _disable_easy_reply(page, data_id: str) -> None:
+    """Keep signing to the current document only.
+
+    Some incoming documents open the sign dialog with "ส่งต่อแบบง่าย" already
+    checked. If it stays checked, eDoc validates the reply/forward section and
+    raises "กรุณากรอกหรือเลือกข้อมูล" unless extra recipient/routing fields are
+    completed. This automation only signs with a comment, so turn reply off.
+    """
+    try:
+        checkbox = page.locator("#chkSignConfirmRpyEnabled")
+        if await checkbox.count() == 0:
+            return
+        if await checkbox.is_checked():
+            await checkbox.click(force=True)
+            logging.info("Disabled easy reply for %s", data_id)
+            await asyncio.sleep(0.2)
+        await page.evaluate(
+            """
+            () => {
+                const cb = document.getElementById('chkSignConfirmRpyEnabled');
+                if (cb && cb.checked) {
+                    cb.checked = false;
+                    cb.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+            }
+            """
+        )
+        state = await page.evaluate(
+            """
+            () => {
+                const cb = document.getElementById('chkSignConfirmRpyEnabled');
+                const panel = document.getElementById('pnlSignConfirmRpyContainer');
+                return {
+                    checked: cb ? cb.checked : null,
+                    panelDisplay: panel ? getComputedStyle(panel).display : null,
+                    panelVisible: panel ? !!(panel.offsetWidth || panel.offsetHeight || panel.getClientRects().length) : null,
+                };
+            }
+            """
+        )
+        logging.info("Easy reply state for %s after disable: %s", data_id, state)
+    except Exception as e:
+        logging.warning("Could not disable easy reply for %s: %s", data_id, e)
+
+
 async def open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
     data_id = doc["data_id"]
     command = doc.get("command") or doc.get("final_command") or ""
@@ -250,6 +311,7 @@ async def open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
 
     await page.click("#optSignConfirmOptions0")
     await page.fill("#txtTargetTypeNote", command)
+    await _disable_easy_reply(page, data_id)
     # page.fill focuses+types but does NOT blur. .NET often runs onchange/onblur
     # handlers that commit state before the postback fires — without this blur,
     # OK lands on a half-initialized form and the modal stays open.
@@ -272,6 +334,7 @@ async def confirm_sign(page, dry_run: bool, data_id: str, ts: str) -> str:
         await page.click("#btnSignConfirmCancel")
         action = "DRY_RUN cancelled"
     else:
+        await _accept_next_dialog(page, data_id)
         await _click_sign_confirm_ok(page, data_id, ts)
         action = "Signed"
 
@@ -284,8 +347,11 @@ async def confirm_sign(page, dry_run: bool, data_id: str, ts: str) -> str:
     try:
         await page.wait_for_selector("#btnSignConfirmOK", state="hidden", timeout=90000)
     except Exception:
-        await page.screenshot(path=f"screenshots/phase5_modal_stuck_{data_id}_{ts}.png")
-        await _dump_modal_state(page, data_id, ts)
+        try:
+            await page.screenshot(path=f"screenshots/phase5_modal_stuck_{data_id}_{ts}.png")
+            await _dump_modal_state(page, data_id, ts)
+        except Exception as dump_error:
+            logging.warning("Could not capture modal-stuck diagnostics for %s: %s", data_id, dump_error)
         raise RuntimeError(f"Sign-confirm dialog did not close after {action} for {data_id}")
 
     after_screenshot = f"screenshots/phase5_after_{data_id}_{ts}.png"
