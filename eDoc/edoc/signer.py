@@ -163,6 +163,40 @@ async def _dismiss_leftover_modal(page, data_id: str) -> None:
         logging.warning("Failed to dismiss leftover modal cleanly: %s", e)
 
 
+async def _click_sign_confirm_ok(page, data_id: str, ts: str) -> None:
+    """Click the ยืนยัน input in the ASP.NET sign-confirm dialog.
+
+    A normal Playwright click can miss this legacy input in live mode even when
+    dry-run Cancel works. Resolve the element by its stable id first, then use
+    DOM click() on the input itself so the page's own onclick/postback handler is
+    activated. XPath/value fallbacks are kept for diagnostics and markup drift.
+    """
+    selectors = [
+        "#btnSignConfirmOK",
+        "xpath=//*[@id='btnSignConfirmOK']",
+        "input[type='button'][value*='ยืนยัน']",
+    ]
+    last_error: Exception | None = None
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            await locator.wait_for(state="visible", timeout=5000)
+            await locator.scroll_into_view_if_needed()
+            handle = await locator.element_handle()
+            if handle is None:
+                continue
+            await page.evaluate("(el) => el.click()", handle)
+            logging.info("Clicked sign-confirm OK for %s via %s", data_id, selector)
+            return
+        except Exception as e:
+            last_error = e
+            logging.warning("Could not click sign-confirm OK via %s for %s: %s", selector, data_id, e)
+
+    await page.screenshot(path=f"screenshots/phase5_no_ok_button_{data_id}_{ts}.png")
+    await _dump_modal_state(page, data_id, ts)
+    raise RuntimeError(f"Could not click sign-confirm OK for {data_id}: {last_error}")
+
+
 async def open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
     data_id = doc["data_id"]
     command = doc.get("command") or doc.get("final_command") or ""
@@ -238,7 +272,7 @@ async def confirm_sign(page, dry_run: bool, data_id: str, ts: str) -> str:
         await page.click("#btnSignConfirmCancel")
         action = "DRY_RUN cancelled"
     else:
-        await page.click("#btnSignConfirmOK")
+        await _click_sign_confirm_ok(page, data_id, ts)
         action = "Signed"
 
     # The modal disappearing is the only reliable "OK was accepted" signal. networkidle
