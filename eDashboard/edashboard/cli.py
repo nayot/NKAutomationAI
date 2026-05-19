@@ -58,6 +58,8 @@ def main():
     """Show a summary of all pending tasks and documents."""
     results = asyncio.run(_run_all())
     render_dashboard(results)
+    if all(not result.error and result.count == 0 for result in results):
+        return
     action_menu(console, results)
 
 
