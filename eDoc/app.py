@@ -27,7 +27,10 @@ from phase4_ai_analysis import (
     build_prompt,
     DEFAULT_COMMAND,
 )
-from phase5_sign import (
+from edoc.browser import login as edoc_login
+from edoc.browser import navigate_to_inbox as edoc_navigate_to_inbox
+from edoc.browser import open_page as edoc_open_page
+from edoc.signer import (
     open_and_fill_form,
     confirm_sign,
     dismiss_form,
@@ -288,18 +291,33 @@ async def run_phase5(dry_run: bool):
         with open("approved_order.json", encoding="utf-8") as f:
             approved = json.load(f)
 
+        username = os.getenv("EDOC_USERNAME")
+        password = os.getenv("EDOC_PASSWORD")
+        inbox_name = os.getenv("INBOX")
+        missing = [
+            name for name, value in (
+                ("EDOC_USERNAME", username),
+                ("EDOC_PASSWORD", password),
+                ("INBOX", inbox_name),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+
         await q.put({"type": "start", "total": len(approved), "dry_run": dry_run})
         logging.info("Phase 5 web — DRY_RUN=%s, %d docs", dry_run, len(approved))
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
-            page = await browser.new_page()
-            await login(page)
-            await navigate_to_inbox(page)
+            browser, _, page = await edoc_open_page(p, headless=False)
+            await edoc_login(page, username, password)
+            await edoc_navigate_to_inbox(page, inbox_name)
 
             for i, doc in enumerate(approved, 1):
+                if "command" not in doc:
+                    doc["command"] = doc.get("final_command", "")
                 # Fill form and get screenshot before pausing for user decision
-                ctx = await open_and_fill_form(page, doc)
+                ctx = await open_and_fill_form(page, doc, inbox_name)
 
                 event = asyncio.Event()
                 phase5_state["decision_event"] = event

@@ -163,9 +163,9 @@ async def _dismiss_leftover_modal(page, data_id: str) -> None:
         logging.warning("Failed to dismiss leftover modal cleanly: %s", e)
 
 
-async def _open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
+async def open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
     data_id = doc["data_id"]
-    command = doc["command"]
+    command = doc.get("command") or doc.get("final_command") or ""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     await _dismiss_leftover_modal(page, data_id)
@@ -223,11 +223,12 @@ async def _open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
         "() => { const e = document.getElementById('txtTargetTypeNote');"
         " if (e) { e.dispatchEvent(new Event('change', {bubbles: true})); e.blur(); } }"
     )
-    await page.screenshot(path=f"screenshots/phase5_form_{data_id}_{ts}.png")
-    return {"data_id": data_id, "ts": ts}
+    form_screenshot = f"screenshots/phase5_form_{data_id}_{ts}.png"
+    await page.screenshot(path=form_screenshot)
+    return {"data_id": data_id, "ts": ts, "form_screenshot": form_screenshot}
 
 
-async def _confirm(page, dry_run: bool, data_id: str, ts: str) -> None:
+async def confirm_sign(page, dry_run: bool, data_id: str, ts: str) -> str:
     # Ensure the OK button is in the viewport before clicking — the dialog can be
     # taller than the 900px viewport and the button scrolls out of the clickable area.
     await page.wait_for_selector("#btnSignConfirmOK", state="visible", timeout=5000)
@@ -253,20 +254,31 @@ async def _confirm(page, dry_run: bool, data_id: str, ts: str) -> None:
         await _dump_modal_state(page, data_id, ts)
         raise RuntimeError(f"Sign-confirm dialog did not close after {action} for {data_id}")
 
-    await page.screenshot(path=f"screenshots/phase5_after_{data_id}_{ts}.png")
+    after_screenshot = f"screenshots/phase5_after_{data_id}_{ts}.png"
+    await page.screenshot(path=after_screenshot)
     logging.info("%s %s", action, data_id)
+    await page.evaluate("VN.V2.App.Home.Page.HideContentFrame()")
+    await asyncio.sleep(1.5)
+    return after_screenshot
+
+
+async def dismiss_form(page) -> None:
+    await page.wait_for_selector("#btnSignConfirmCancel", state="visible", timeout=5000)
+    await page.locator("#btnSignConfirmCancel").scroll_into_view_if_needed()
+    await page.click("#btnSignConfirmCancel")
+    await page.wait_for_selector("#btnSignConfirmOK", state="hidden", timeout=90000)
     await page.evaluate("VN.V2.App.Home.Page.HideContentFrame()")
     await asyncio.sleep(1.5)
 
 
 async def sign_one(page, doc: dict, inbox_name: str, dry_run: bool) -> SignResult:
     try:
-        ctx = await _open_and_fill_form(page, doc, inbox_name)
-        await _confirm(page, dry_run, ctx["data_id"], ctx["ts"])
+        ctx = await open_and_fill_form(page, doc, inbox_name)
+        await confirm_sign(page, dry_run, ctx["data_id"], ctx["ts"])
         return SignResult(
             data_id=doc["data_id"],
             title=doc["title"],
-            command=doc["command"],
+            command=doc.get("command") or doc.get("final_command") or "",
             signed=not dry_run,
         )
     except Exception as e:
@@ -274,7 +286,7 @@ async def sign_one(page, doc: dict, inbox_name: str, dry_run: bool) -> SignResul
         return SignResult(
             data_id=doc.get("data_id", "?"),
             title=doc.get("title", "?"),
-            command=doc.get("command", ""),
+            command=doc.get("command") or doc.get("final_command") or "",
             signed=False,
             error=str(e),
         )
