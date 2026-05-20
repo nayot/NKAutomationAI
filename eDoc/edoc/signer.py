@@ -318,6 +318,46 @@ async def _disable_easy_reply(page, data_id: str) -> None:
         logging.warning("Could not disable easy reply for %s: %s", data_id, e)
 
 
+async def _ensure_receive_number_choice(page, data_id: str) -> None:
+    """Some incoming docs open the sign-confirm dialog with the receive-number
+    selector (`pnlSignConfirmRcvReceive .ui-receive-number-choice-number`)
+    empty — no <option> children, no value — because the originating workflow
+    expects the signer to issue a fresh document number. eDoc's client
+    validator then raises 'กรุณากรอกหรือเลือกข้อมูล' on OK and aborts the
+    postback. We don't want to consume a real running number, so inject
+    'ไม่ออกเลข' (value 'N') and select it; this matches the default state of
+    docs that sign cleanly and avoids issuing a number we didn't ask for.
+    """
+    try:
+        state = await page.evaluate(
+            """
+            () => {
+                const root = document.getElementById('pnlSignConfirmRcvReceive');
+                if (!root) return { found: false };
+                const sel = root.querySelector('.ui-receive-number-choice-number');
+                if (!sel) return { found: false };
+                const hadValue = !!sel.value && sel.options.length > 0;
+                if (hadValue) return { found: true, mutated: false, value: sel.value };
+                sel.innerHTML = '';
+                const opt = document.createElement('option');
+                opt.value = 'N';
+                opt.text = 'ไม่ออกเลข';
+                opt.selected = true;
+                sel.appendChild(opt);
+                sel.value = 'N';
+                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                return { found: true, mutated: true, value: sel.value };
+            }
+            """
+        )
+        if state.get("mutated"):
+            logging.info("Forced receive-number=N for %s (select was empty)", data_id)
+        elif state.get("found"):
+            logging.debug("Receive-number already set for %s: %s", data_id, state.get("value"))
+    except Exception as e:
+        logging.warning("Could not adjust receive-number select for %s: %s", data_id, e)
+
+
 async def open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
     data_id = doc["data_id"]
     command = doc.get("command") or doc.get("final_command") or ""
@@ -372,6 +412,7 @@ async def open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
     await page.click("#optSignConfirmOptions0")
     await page.fill("#txtTargetTypeNote", command)
     await _disable_easy_reply(page, data_id)
+    await _ensure_receive_number_choice(page, data_id)
     # page.fill focuses+types but does NOT blur. .NET often runs onchange/onblur
     # handlers that commit state before the postback fires — without this blur,
     # OK lands on a half-initialized form and the modal stays open.
