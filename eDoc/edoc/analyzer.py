@@ -3,6 +3,8 @@ import io
 import json
 import logging
 import os
+from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 import anthropic
@@ -162,6 +164,9 @@ def _summarize_attachment(
     doc: dict,
     model: str,
     fallback_model: str,
+    on_status: Callable[[str], None],
+    record_used: Callable[[str, str], None],
+    status_prefix: str,
 ) -> str | None:
     path = doc.get("attachment_path")
     if not path or not Path(path).exists():
@@ -173,15 +178,21 @@ def _summarize_attachment(
         return None
 
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode()
+    on_status(f"{status_prefix} · anthropic {model}")
     try:
-        return _summarize_attachment_anthropic(anth_client, pdf_b64, model)
+        result = _summarize_attachment_anthropic(anth_client, pdf_b64, model)
+        record_used("anthropic", model)
+        return result
     except Exception as e:
         if not _should_fallback(e) or oai_client is None:
             logging.warning("Attachment summary failed (no fallback): %s", e)
             return None
         logging.warning("Anthropic overload (%s); falling back to OpenAI %s", e, fallback_model)
+        on_status(f"{status_prefix} · openai {fallback_model} (anthropic overloaded)")
         try:
-            return _summarize_attachment_openai(oai_client, pdf_b64, fallback_model)
+            result = _summarize_attachment_openai(oai_client, pdf_b64, fallback_model)
+            record_used("openai", fallback_model)
+            return result
         except Exception as e2:
             logging.warning("OpenAI fallback also failed: %s", e2)
             return None
@@ -241,11 +252,14 @@ def analyze(
     model: str,
     fallback_model: str = "gpt-4o-mini",
     openai_api_key: str | None = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> list[dict]:
     """Send docs to Claude, return ranked list with rank/data_id/title/summary/reason/command.
     Falls back to OpenAI (`fallback_model`) on Anthropic overload/5xx/connection errors when
     `openai_api_key` is configured. The AI suggests `command` per document; falls back to
-    DEFAULT_COMMAND if omitted."""
+    DEFAULT_COMMAND if omitted.
+    `on_status(msg)` is invoked before each API call so callers (the CLI progress bar) can
+    show the provider+model actually in use, including mid-run fallbacks."""
     history = load_history()
     logging.info(
         "AI analysis: %d docs, %d history entries, model=%s, fallback=%s",
@@ -255,12 +269,22 @@ def analyze(
     anth_client = anthropic.Anthropic(max_retries=3)
     oai_client = openai.OpenAI(api_key=openai_api_key) if openai_api_key else None
 
+    usage: Counter[tuple[str, str]] = Counter()
+    _status = on_status or (lambda _msg: None)
+
+    def _record(provider: str, used_model: str) -> None:
+        usage[(provider, used_model)] += 1
+
     # Summarize PDF attachments and enrich each doc before ranking
     docs_with_att = [d for d in docs if d.get("attachment_path")]
     if docs_with_att:
         print(f"\n── Attachment analysis ({len(docs_with_att)} file(s), first 3 pages each) ──")
-        for doc in docs_with_att:
-            summary = _summarize_attachment(anth_client, oai_client, doc, model, fallback_model)
+        for i, doc in enumerate(docs_with_att, 1):
+            prefix = f"[cyan]Step 3/4 — Summarizing PDF {i}/{len(docs_with_att)}"
+            summary = _summarize_attachment(
+                anth_client, oai_client, doc, model, fallback_model,
+                _status, _record, prefix,
+            )
             doc["attachment_summary"] = summary
             if summary:
                 print(f"[{doc['data_id']}] {doc['title'][:60]}")
@@ -272,16 +296,24 @@ def analyze(
     system_prompt = _build_system_prompt(history)
     user_prompt = _build_user_prompt(docs)
 
+    rank_prefix = f"[cyan]Step 4/4 — Ranking {len(docs)} docs"
+    _status(f"{rank_prefix} · anthropic {model}")
     try:
         raw = _rank_anthropic(anth_client, system_prompt, user_prompt, model)
+        _record("anthropic", model)
     except Exception as e:
         if not _should_fallback(e) or oai_client is None:
             raise
         logging.warning("Anthropic ranking overload (%s); falling back to OpenAI %s", e, fallback_model)
         print(f"\n[!] Anthropic overloaded; retrying ranking on OpenAI {fallback_model}")
+        _status(f"{rank_prefix} · openai {fallback_model} (anthropic overloaded)")
         raw = _rank_openai(oai_client, system_prompt, user_prompt, fallback_model)
+        _record("openai", fallback_model)
 
     logging.info("AI response received (%d chars)", len(raw))
+    usage_str = ", ".join(f"{p} {m} ×{n}" for (p, m), n in usage.most_common()) or "none"
+    print(f"\nModel usage: {usage_str}")
+    logging.info("Model usage: %s", usage_str)
 
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1]

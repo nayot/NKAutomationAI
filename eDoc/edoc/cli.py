@@ -140,8 +140,8 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
         TimeElapsedColumn(),
         console=console,
     ) as ai_progress:
-        ai_progress.add_task(
-            f"[cyan]Step 3–4/4 — Attachments + ranking ({len(docs)} docs) with {config.ai_model}",
+        task_id = ai_progress.add_task(
+            f"[cyan]Step 3–4/4 — Preparing analysis ({len(docs)} docs) · anthropic {config.ai_model}",
             total=None,
         )
         try:
@@ -150,6 +150,7 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
                 model=config.ai_model,
                 fallback_model=config.ai_fallback_model,
                 openai_api_key=config.openai_api_key,
+                on_status=lambda msg: ai_progress.update(task_id, description=msg),
             )
         except AnalyzerError as e:
             console.print(f"[red]AI analysis failed:[/red] {e}")
