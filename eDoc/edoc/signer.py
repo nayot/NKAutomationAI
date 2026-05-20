@@ -68,9 +68,58 @@ async def _dump_modal_state(page, data_id: str, ts: str) -> None:
                     '.error, .alert, [class*="error"], [class*="alert"], [class*="toast"]'
                 )).filter(el => el.offsetWidth || el.offsetHeight)
                   .map(el => ({ class: el.className, text: el.innerText.slice(0, 200) }));
+                // Visible form inputs inside the sign-confirm modal — easy scan for
+                // which required field is empty when validation rejects the submit.
+                const modal = document.querySelector('#divDialogSignConfirmation') || document.body;
+                const isVisible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                const dialogInputs = Array.from(modal.querySelectorAll('input, select, textarea'))
+                    .filter(isVisible)
+                    .map(el => {
+                        const label = el.id ? document.querySelector(`label[for="${el.id}"]`) : null;
+                        const out = {
+                            tag: el.tagName.toLowerCase(),
+                            id: el.id || null,
+                            name: el.getAttribute('name') || null,
+                            type: el.type || null,
+                            label: label ? label.innerText.trim().slice(0, 80) : null,
+                        };
+                        if (el.type === 'checkbox' || el.type === 'radio') {
+                            out.checked = el.checked;
+                            out.value = el.value;
+                        } else if (el.tagName === 'SELECT') {
+                            const opt = el.options[el.selectedIndex];
+                            out.value = el.value;
+                            out.selectedText = opt ? opt.text.slice(0, 80) : null;
+                        } else {
+                            out.value = (el.value || '').slice(0, 200);
+                        }
+                        out.required = el.required || el.getAttribute('aria-required') === 'true';
+                        out.disabled = el.disabled;
+                        return out;
+                    });
+                // Any signature pad canvas inside the dialog — a blank one is a common
+                // cause of "กรุณากรอกหรือเลือกข้อมูล".
+                const signaturePads = Array.from(modal.querySelectorAll('canvas'))
+                    .filter(isVisible)
+                    .map(c => ({
+                        id: (c.closest('[id]') || {}).id || null,
+                        width: c.width,
+                        height: c.height,
+                        // A signature canvas has non-zero pixel data; blank canvases have all-transparent pixels.
+                        blank: (() => {
+                            try {
+                                if (!c.width || !c.height) return true;
+                                const ctx = c.getContext('2d');
+                                const data = ctx.getImageData(0, 0, c.width, c.height).data;
+                                for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return false;
+                                return true;
+                            } catch (e) { return null; }
+                        })(),
+                    }));
                 return {
                     url: location.href,
                     radios, checkboxes, buttons, alerts, containers,
+                    dialogInputs, signaturePads,
                     targetNote: (document.querySelector('#txtTargetTypeNote') || {}).value || null,
                 };
             }
@@ -197,15 +246,26 @@ async def _click_sign_confirm_ok(page, data_id: str, ts: str) -> None:
     raise RuntimeError(f"Could not click sign-confirm OK for {data_id}: {last_error}")
 
 
-async def _accept_next_dialog(page, data_id: str) -> None:
+_VALIDATION_ALERT_FRAGMENTS = ("กรุณากรอก", "กรุณาเลือก", "เลือกข้อมูล")
+
+
+async def _accept_next_dialog(page, data_id: str, validation_alerts: list[str]) -> None:
+    """Auto-accept the JS dialog the OK click triggers. If the dialog is a validation
+    alert (eDoc raises `alert('กรุณากรอกหรือเลือกข้อมูล')` when a required field is
+    empty), record its message in `validation_alerts` so the caller can fail fast
+    instead of waiting 90s for a modal that will never close."""
+
     async def accept_dialog(dialog) -> None:
+        msg = dialog.message or ""
         try:
             logging.info(
                 "Accepting dialog while signing %s: type=%s message=%r",
                 data_id,
                 dialog.type,
-                dialog.message,
+                msg,
             )
+            if dialog.type == "alert" and any(frag in msg for frag in _VALIDATION_ALERT_FRAGMENTS):
+                validation_alerts.append(msg)
             await dialog.accept()
         except Exception as e:
             logging.warning("Failed to accept dialog while signing %s: %s", data_id, e)
@@ -326,17 +386,43 @@ async def open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
 
 async def confirm_sign(page, dry_run: bool, data_id: str, ts: str) -> str:
     # Ensure the OK button is in the viewport before clicking — the dialog can be
-    # taller than the 900px viewport and the button scrolls out of the clickable area.
+    # taller than the viewport and the button scrolls out of the clickable area.
     await page.wait_for_selector("#btnSignConfirmOK", state="visible", timeout=5000)
     await page.locator("#btnSignConfirmOK").scroll_into_view_if_needed()
+
+    validation_alerts: list[str] = []
 
     if dry_run:
         await page.click("#btnSignConfirmCancel")
         action = "DRY_RUN cancelled"
     else:
-        await _accept_next_dialog(page, data_id)
+        # Snapshot the modal exactly as it is about to be submitted. If the click
+        # is later rejected by client validation, the `_pre` dump shows which
+        # required fields were empty.
+        try:
+            await _dump_modal_state(page, data_id, f"{ts}_pre")
+        except Exception as e:
+            logging.warning("Could not capture pre-click modal state for %s: %s", data_id, e)
+
+        await _accept_next_dialog(page, data_id, validation_alerts)
         await _click_sign_confirm_ok(page, data_id, ts)
         action = "Signed"
+
+        # The dialog handler runs in a background task; yield once so any
+        # validation alert fired during the click is recorded before we check.
+        await asyncio.sleep(0)
+        if validation_alerts:
+            try:
+                await page.screenshot(path=f"screenshots/phase5_validation_failed_{data_id}_{ts}.png")
+                await _dump_modal_state(page, data_id, ts)
+            except Exception as dump_error:
+                logging.warning("Could not capture validation diagnostics for %s: %s", data_id, dump_error)
+            # Leave the modal open so the user can inspect the form in the headful
+            # browser. Caller will move on to the next doc; this one stays "to sign".
+            raise RuntimeError(
+                f"Sign-confirm validation rejected {data_id}: {validation_alerts[0]!r}. "
+                f"See screenshots/phase5_modal_stuck_{data_id}_{ts}.html for required fields."
+            )
 
     # The modal disappearing is the only reliable "OK was accepted" signal. networkidle
     # is unsafe here — the app keepalive prevents it ever settling on some docs, which
