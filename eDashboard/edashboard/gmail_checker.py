@@ -4,6 +4,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from edashboard.config import GMAIL_TOKEN_FILE
 from edashboard.models import CheckResult
@@ -59,17 +60,22 @@ def _check_sync(client_id: str, client_secret: str) -> CheckResult:
 
         items = []
         for thread in threads[:MAX_ITEMS]:
-            msg = (
-                service.users()
-                .messages()
-                .get(
-                    userId="me",
-                    id=thread["id"],
-                    format="metadata",
-                    metadataHeaders=["Subject", "From"],
+            try:
+                msg = (
+                    service.users()
+                    .messages()
+                    .get(
+                        userId="me",
+                        id=thread["id"],
+                        format="metadata",
+                        metadataHeaders=["Subject", "From"],
+                    )
+                    .execute()
                 )
-                .execute()
-            )
+            except HttpError as e:
+                if e.resp.status == 404:
+                    continue
+                raise
             headers = {
                 h["name"]: h["value"]
                 for h in msg.get("payload", {}).get("headers", [])
