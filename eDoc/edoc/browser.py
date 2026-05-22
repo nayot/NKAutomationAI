@@ -1,11 +1,28 @@
 import asyncio
 import logging
+import subprocess
 
 from edoc.config import URL
 
+
+def _detect_viewport() -> dict:
+    """Return the primary display's logical resolution (macOS), falling back to 1440×900."""
+    try:
+        out = subprocess.run(
+            ["osascript", "-e",
+             'tell application "Finder" to get bounds of window of desktop'],
+            capture_output=True, text=True, timeout=3,
+        ).stdout.strip()
+        # "0, 0, 2560, 1600" → width=parts[2], height=parts[3]
+        parts = [int(x.strip()) for x in out.split(",")]
+        return {"width": parts[2], "height": parts[3]}
+    except Exception:
+        return {"width": 1440, "height": 900}
+
+
 # Realistic desktop fingerprint — without these, BUU's portal serves a different
 # (non-functional) page to headless Chromium and #txtLogin never appears.
-DESKTOP_VIEWPORT = {"width": 1440, "height": 900}
+DESKTOP_VIEWPORT = _detect_viewport()
 DESKTOP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "

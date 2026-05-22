@@ -1,5 +1,7 @@
+import asyncio
 import shutil
 import subprocess
+import threading
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,9 +12,10 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.text import Text
 
+from edashboard.config import load_config
 from edashboard.models import CheckResult
 
-EDOC_PATH = Path("/home/nayot/github/NKAutomationAI/eDoc")
+EDOC_PATH = Path(__file__).parent.parent.parent / "eDoc"
 # Unset VIRTUAL_ENV so uv uses eDoc's .venv (not the eDashboard one we're running in),
 # and pass --force so edoc doesn't refuse on a READY queue.
 EDOC_COMMAND = "unset VIRTUAL_ENV; uv run edoc --force"
@@ -116,10 +119,42 @@ def _open_esign(console: Console) -> None:
     console.print(f"[dim]→ opened {ESIGN_URL}[/dim]")
 
 
+async def _fiori_login_and_wait(username: str, password: str) -> None:
+    from playwright.async_api import async_playwright, TimeoutError as PwTimeout
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context(
+            no_viewport=True,
+            ignore_https_errors=True,
+        )
+        page = await context.new_page()
+        await page.goto(FIORI_URL, wait_until="domcontentloaded", timeout=60_000)
+        await page.fill('[name="sap-user"]', username)
+        await page.fill('[name="sap-password"]', password)
+        await page.click("#LOGIN_LINK")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=60_000)
+        except PwTimeout:
+            pass
+        # Keep the browser alive until the user closes it
+        closed = asyncio.Event()
+        browser.on("disconnected", lambda _: closed.set())
+        await closed.wait()
+
+
 @_handler("fiori")
 def _open_fiori(console: Console) -> None:
-    webbrowser.open(FIORI_URL)
-    console.print("[dim]→ opened Fiori[/dim]")
+    cfg = load_config()
+    if not cfg.fiori_username or not cfg.fiori_password:
+        webbrowser.open(FIORI_URL)
+        console.print("[dim]→ opened Fiori in browser (no credentials configured)[/dim]")
+        return
+
+    def _run() -> None:
+        asyncio.run(_fiori_login_and_wait(cfg.fiori_username, cfg.fiori_password))
+
+    threading.Thread(target=_run, daemon=False).start()
+    console.print("[dim]→ launching Fiori and logging in… (close the browser window when done)[/dim]")
 
 
 @_handler("edoc")
@@ -152,7 +187,7 @@ def _build_items(results: list[CheckResult]) -> list[MenuItem]:
         ("gmail", "📧", "Open Gmail in browser",        ""),
         ("edoc",  "📄", "Open eDoc in a new terminal", "(uv run edoc)"),
         ("esign", "✍️ ", "Open eSign in browser",       ""),
-        ("fiori", "🏢", "Open Fiori in browser",        ""),
+        ("fiori", "🏢", "Open Fiori (auto-login)",        ""),
     ]
     items: list[MenuItem] = []
     for key, icon, label, hint in specs:

@@ -190,15 +190,9 @@ async def _cmd_sign(args: argparse.Namespace, config: Config) -> int:
     console.print(f"[bold]{mode}[/bold] — signing {len(to_sign)} document(s); skipping {len(skipped)}.")
     if args.dry_run:
         console.print("Dry-run: forms will be filled but cancelled before final submit.")
-    sign_headless = config.headless
-    if not args.dry_run and config.headless:
-        sign_headless = False
-        console.print("[yellow]Live signing is forced headful because headless mode can leave eDoc stuck.[/yellow]")
-        logging.warning("Overriding HEADLESS=true for live signing")
-
     results: list[SignResult] = []
     async with async_playwright() as p:
-        browser, _, page = await open_page(p, sign_headless)
+        browser, _, page = await open_page(p, config.headless)
         try:
             with console.status("[bold]Step 1/2 — Logging in & navigating to inbox..."):
                 await login(page, config.username, config.password)
