@@ -13,9 +13,9 @@ from edashboard.display import render_dashboard
 from edashboard.edoc_checker import check_edoc
 from edashboard.esign_checker import check_esign
 from edashboard.fiori_checker import check_fiori
-from edashboard.gmail_checker import check_gmail
+from edashboard.gmail_checker import AUTH_PORT, check_gmail, run_gmail_auth
 
-app = typer.Typer(help="Check pending tasks across Gmail, eDoc, eSign, and Fiori.")
+app = typer.Typer(help="Check pending tasks across Gmail, eDoc, eSign, and Fiori.", invoke_without_command=True)
 console = Console()
 
 _ICONS = {"Gmail": "📧", "eDoc": "📄", "eSign": "✍️ ", "Fiori": "🏢"}
@@ -113,11 +113,26 @@ def _to_json_payload(results: list) -> dict:
     }
 
 
-@app.command()
+@app.command("auth-gmail")
+def auth_gmail():
+    """Authenticate Gmail via OAuth2 (works on headless servers — no SSH tunnel needed)."""
+    cfg = load_config()
+    if not cfg.google_client_id or not cfg.google_client_secret:
+        console.print("[red]GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set in .env[/red]")
+        raise typer.Exit(1)
+    run_gmail_auth(cfg.google_client_id, cfg.google_client_secret)
+    console.print("[green]Token saved. Gmail is ready.[/green]")
+
+
+@app.callback()
 def main(
+    ctx: typer.Context,
     json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable JSON and exit.")] = False,
 ):
     """Show a summary of all pending tasks and documents."""
+    if ctx.invoked_subcommand is not None:
+        return
+
     if json_output:
         cfg = load_config()
         results = asyncio.run(_gather_results(cfg))

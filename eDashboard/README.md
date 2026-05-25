@@ -71,13 +71,18 @@ cp .env.example .env
 | `GOOGLE_CLIENT_ID` | Gmail | OAuth2 Desktop app Client ID |
 | `GOOGLE_CLIENT_SECRET` | Gmail | OAuth2 Desktop app Client Secret |
 
-### Gmail OAuth setup (first run only)
+### Gmail OAuth setup (one-time)
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials.
 2. Create an **OAuth 2.0 Client ID** of type **Desktop app**.
 3. Copy the Client ID and Client Secret into `.env`.
-4. On the first `edashboard` run a browser window will open for Google OAuth consent — approve it once.
-5. The token is saved to `~/.config/edashboard/gmail_token.json` and reused automatically.
+4. Run the auth command (works on headless/remote servers — no browser needed on the server):
+   ```bash
+   uv run edashboard auth-gmail
+   ```
+5. Open the printed URL in **any browser** on any machine, log in, and click Allow.
+6. Your browser will show "Unable to connect" — that is expected. Copy the full URL from the address bar and paste it back into the terminal.
+7. The token is saved to `~/.config/edashboard/gmail_token.json` and reused automatically (auto-refreshed on expiry).
 
 ## Usage
 
