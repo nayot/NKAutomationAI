@@ -273,49 +273,48 @@ async def _accept_next_dialog(page, data_id: str, validation_alerts: list[str]) 
     page.once("dialog", lambda dialog: asyncio.create_task(accept_dialog(dialog)))
 
 
-async def _disable_easy_reply(page, data_id: str) -> None:
-    """Keep signing to the current document only.
+async def _ensure_easy_reply_checked(page, data_id: str) -> None:
+    """Ensure both easy-reply checkboxes are checked before confirming.
 
-    Some incoming documents open the sign dialog with "ส่งต่อแบบง่าย" already
-    checked. If it stays checked, eDoc validates the reply/forward section and
-    raises "กรุณากรอกหรือเลือกข้อมูล" unless extra recipient/routing fields are
-    completed. This automation only signs with a comment, so turn reply off.
+    #chkSignConfirmRpyEnabled      — ตอบกลับแบบง่าย
+    #chkSignConfirmRpyPreviousMessages — ส่งต่อเอกสารและข้อความแนบท้ายเดิมของบุคคลก่อนหน้าไปยังผู้รับ
     """
     try:
-        checkbox = page.locator("#chkSignConfirmRpyEnabled")
-        if await checkbox.count() == 0:
-            return
-        if await checkbox.is_checked():
-            await checkbox.click(force=True)
-            logging.info("Disabled easy reply for %s", data_id)
-            await asyncio.sleep(0.2)
-        await page.evaluate(
-            """
-            () => {
-                const cb = document.getElementById('chkSignConfirmRpyEnabled');
-                if (cb && cb.checked) {
-                    cb.checked = false;
-                    cb.dispatchEvent(new Event('change', {bubbles: true}));
-                }
-            }
-            """
-        )
+        for cb_id in ("chkSignConfirmRpyEnabled", "chkSignConfirmRpyPreviousMessages"):
+            checkbox = page.locator(f"#{cb_id}")
+            if await checkbox.count() == 0:
+                logging.warning("Checkbox %s not found for %s", cb_id, data_id)
+                continue
+            if not await checkbox.is_checked():
+                await checkbox.click(force=True)
+                await asyncio.sleep(0.2)
+            # Ensure via JS in case the click was intercepted
+            await page.evaluate(
+                f"""
+                () => {{
+                    const cb = document.getElementById('{cb_id}');
+                    if (cb && !cb.checked) {{
+                        cb.checked = true;
+                        cb.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    }}
+                }}
+                """
+            )
         state = await page.evaluate(
             """
             () => {
-                const cb = document.getElementById('chkSignConfirmRpyEnabled');
-                const panel = document.getElementById('pnlSignConfirmRpyContainer');
+                const enabled = document.getElementById('chkSignConfirmRpyEnabled');
+                const prev    = document.getElementById('chkSignConfirmRpyPreviousMessages');
                 return {
-                    checked: cb ? cb.checked : null,
-                    panelDisplay: panel ? getComputedStyle(panel).display : null,
-                    panelVisible: panel ? !!(panel.offsetWidth || panel.offsetHeight || panel.getClientRects().length) : null,
+                    rpyEnabled: enabled ? enabled.checked : null,
+                    rpyPrevious: prev ? prev.checked : null,
                 };
             }
             """
         )
-        logging.info("Easy reply state for %s after disable: %s", data_id, state)
+        logging.info("Easy reply checkbox state for %s: %s", data_id, state)
     except Exception as e:
-        logging.warning("Could not disable easy reply for %s: %s", data_id, e)
+        logging.warning("Could not ensure easy reply checked for %s: %s", data_id, e)
 
 
 async def _ensure_receive_number_choice(page, data_id: str) -> None:
@@ -411,7 +410,7 @@ async def open_and_fill_form(page, doc: dict, inbox_name: str) -> dict:
 
     await page.click("#optSignConfirmOptions0")
     await page.fill("#txtTargetTypeNote", command)
-    await _disable_easy_reply(page, data_id)
+    await _ensure_easy_reply_checked(page, data_id)
     await _ensure_receive_number_choice(page, data_id)
     # page.fill focuses+types but does NOT blur. .NET often runs onchange/onblur
     # handlers that commit state before the postback fires — without this blur,
