@@ -199,8 +199,8 @@ def run(
         _print_error(f"Browser error: {e}")
         raise typer.Exit(code=3 if in_login_phase else 1)
     except LoginCheckError as e:
-        _print_error(str(e))
-        raise typer.Exit(code=1)
+        console.print(Panel(str(e), title="[bold yellow]Warning[/bold yellow]", border_style="yellow"))
+        raise typer.Exit(code=0)
     except typer.Exit:
         raise
     except Exception as e:

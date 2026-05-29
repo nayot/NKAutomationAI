@@ -41,7 +41,8 @@ def login(page: Page, username: str, password: str) -> None:
         count = int(raw) if raw.isdigit() else 0
         if count > 0:
             raise LoginCheckError(
-                f'There are {count} document(s) to be signed, clear them first.'
+                f"รอลงนาม inbox has {count} document(s) pending.\n"
+                "Sign or clear them before uploading a new batch."
             )
     except PlaywrightTimeoutError:
         pass  # badge absent = no pending docs, safe to proceed
