@@ -44,7 +44,8 @@ All four checks run concurrently via `asyncio.gather()`:
 | eDoc | Login | `#txtLogin`, `#txtPassword`, `#btnLogin` |
 | eDoc | Inbox frame | `#iframeHomeBody > #home_list_full > home_list` |
 | eDoc | Doc items | `a.home-list-open-item` |
-| eSign | Sign badge | `#totalNotBeenSigned[data-count]` |
+| eSign | Pending badge (รอลงนาม) | `li:has(a[href="https://e-sign.buu.ac.th/signDocument"]) span#totalNotBeenSigned[data-count]` |
+| eSign | Secret badge (เอกสารลับ) | `li:has(a[href^="https://e-sign.buu.ac.th/secretDocument/"]):has(span#totalNotBeenSigned) span#totalNotBeenSigned[data-count]` |
 | eSign | Sign buttons | `a.btn.btn-outline-success` |
 | Fiori | OData endpoint | `/sap/opu/odata/IWPGW/TASKPROCESSING;mo;v=2/TaskCollection` |
 

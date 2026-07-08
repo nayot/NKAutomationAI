@@ -40,15 +40,27 @@ async def check_esign(username: str, password: str) -> CheckResult:
             except PwTimeout:
                 pass
 
-            # Count from badge
-            count = 0
-            try:
-                badge = page.locator("#totalNotBeenSigned").first
-                await badge.wait_for(state="attached", timeout=5000)
-                raw = await badge.get_attribute("data-count") or "0"
-                count = int(raw) if raw.isdigit() else 0
-            except PwTimeout:
-                pass
+            # Count from badges. The page reuses the same id="totalNotBeenSigned"
+            # for both the "รอลงนาม" (pending signature) badge and the
+            # "เอกสารลับ" (secret documents) badge, so each must be scoped to
+            # its own sidebar <li> to avoid reading the wrong one.
+            async def _badge_count(li_selector: str) -> int:
+                try:
+                    badge = page.locator(f"{li_selector} span#totalNotBeenSigned").first
+                    await badge.wait_for(state="attached", timeout=5000)
+                    raw = await badge.get_attribute("data-count") or "0"
+                    return int(raw) if raw.isdigit() else 0
+                except PwTimeout:
+                    return 0
+
+            pending_count = await _badge_count(
+                'li.list-group-item:has(a[href="https://e-sign.buu.ac.th/signDocument"])'
+            )
+            secret_count = await _badge_count(
+                'li.list-group-item:has(a[href^="https://e-sign.buu.ac.th/secretDocument/"])'
+                ":has(span#totalNotBeenSigned)"
+            )
+            count = pending_count + secret_count
 
             # Extract document titles from page HTML
             items = []
