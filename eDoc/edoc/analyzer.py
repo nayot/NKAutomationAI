@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import re
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -198,6 +199,69 @@ def _summarize_attachment(
             return None
 
 
+_GENERIC_ROUTING_STAMPS = {
+    "นำเสนอผู้บริหารเพื่อพิจารณา",
+    "นำเสนอผู้บริหารเพื่อพิจารณาลงนาม",
+    "นำเสนอผู้บริหารเพื่อโปรดพิจารณา",
+    "นำเสนอผู้บริหารเพื่อโปรดพิจารณาลงนาม",
+}
+_NUMBERED_LINE_START_RE = re.compile(r"^\s*\d+[.)]\s*")
+
+
+def _split_numbered_items(block: str) -> list[str]:
+    """Split a 'เรียน ...' memo block into its numbered items ('1. ...', '2. ...'),
+    joining any wrapped continuation lines back into each item."""
+    items: list[str] = []
+    current: list[str] = []
+    for line in block.splitlines():
+        if _NUMBERED_LINE_START_RE.match(line):
+            if current:
+                items.append(" ".join(current).strip())
+            current = [_NUMBERED_LINE_START_RE.sub("", line)]
+        elif current:
+            current.append(line.strip())
+    if current:
+        items.append(" ".join(current).strip())
+    return items
+
+
+def _extract_staff_opinion(notes: str) -> str:
+    """Pull the literal comments staff wrote while routing this document — a short
+    routing note (e.g. "ทราบ") plus every numbered item inside the formal memo (e.g.
+    "1. ... เรื่อง <topic>" and "2. เห็นสมควร...") — verbatim. Computed deterministically
+    (no AI) so the admin sees exactly what staff wrote, not a paraphrase that risks
+    drifting into a generic restatement of the document.
+
+    Item 1 is kept (not just the final recommendation item) because it's usually the
+    only part of the memo that names the specific document/topic — dropping it made
+    two different documents that share the same generic closing instruction (e.g.
+    "เห็นสมควรมอบ งานบริหารวิจัย ทำหนังสือนำส่ง...ผ่านระบบ e-Sign ต่อไป") render with
+    byte-identical opinion text, which read as a duplication bug."""
+    if not notes:
+        return ""
+    candidates: list[str] = []
+    for block in notes.split("\n---\n"):
+        block = block.strip()
+        if not block:
+            continue
+        if block.startswith("เรียน"):
+            for item in _split_numbered_items(block):
+                if item:
+                    candidates.append(item)
+            continue
+        if block in _GENERIC_ROUTING_STAMPS:
+            continue
+        if len(block) <= 80:
+            candidates.append(block)
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return " / ".join(out)
+
+
 def _build_user_prompt(docs: list[dict]) -> str:
     lines = []
     for d in docs:
@@ -344,11 +408,14 @@ def analyze(
     if len(suggested) != len(docs):
         logging.warning("AI returned %d of %d documents", len(suggested), len(docs))
 
-    # Re-attach fields that Claude doesn't echo back
+    # Re-attach fields that Claude doesn't echo back. "opinion" is computed
+    # deterministically (not by the AI) so it faithfully quotes what staff wrote.
     att_map = {d["data_id"]: d.get("attachment_path") for d in docs}
+    opinion_map = {d["data_id"]: _extract_staff_opinion(d.get("notes", "")) for d in docs}
     for item in suggested:
         path = att_map.get(item["data_id"])
         if path:
             item["attachment_path"] = path
+        item["opinion"] = opinion_map.get(item["data_id"], "")
 
     return suggested

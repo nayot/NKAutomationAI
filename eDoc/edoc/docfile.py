@@ -22,6 +22,7 @@ class DocEntry:
     command: str
     reason: str = ""
     summary: str = ""
+    opinion: str = ""
 
 
 @dataclass
@@ -70,6 +71,8 @@ def write_queue(ranked: list[dict], path: str, inbox_name: str) -> None:
         lines.append("")
         if item.get("summary"):
             lines.append(f"- **Summary:** {item['summary']}")
+        if item.get("opinion"):
+            lines.append(f"- **Opinions:** {item['opinion']}")
         lines.append(f"- **Data ID:** `{item['data_id']}`")
         lines.append("- **Action:** `signing`")
         lines.append(f"- **Command:** {item.get('command', DEFAULT_COMMAND)}")
@@ -132,6 +135,7 @@ def _parse_doc_block(block: str, block_index: int) -> DocEntry:
         command=command,
         reason=fields.get("ai reasoning", ""),
         summary=fields.get("summary", ""),
+        opinion=fields.get("opinions", ""),
     )
 
 
