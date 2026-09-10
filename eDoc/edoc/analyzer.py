@@ -21,7 +21,24 @@ from edoc.config import (
 )
 
 HISTORY_FILE = "signing_history.json"
-ATTACHMENT_MAX_TOKENS = 512
+# Output budget for one attachment summary. The prompt asks for <=3 Thai sentences
+# (~400 tokens), but reasoning tokens are billed as output tokens and drawn from
+# this same budget, so a reasoning model can spend the whole cap thinking and
+# return finish_reason="length" with EMPTY content — which is exactly what 512 did
+# on z-ai/glm-5.3-flash. Keep enough headroom for reasoning plus the answer.
+ATTACHMENT_MAX_TOKENS = 3000
+# Reasoning budget for attachment summaries; "" sends no reasoning config at all.
+# Off, because neither configured model reasons by default (gpt-4o-mini cannot,
+# Claude leaves thinking off unless asked) — and OpenRouter forwards unrecognised
+# params to the provider, so sending it to a non-reasoning model risks a 400 that
+# _should_fallback(on_client_error=True) would answer by quietly rerouting every
+# attachment to the pricier fallback.
+# Set this to "low" when EDOC_AI_MODEL is a reasoning model: reasoning tokens are
+# billed from ATTACHMENT_MAX_TOKENS, and an unbounded reasoner spends the lot
+# before writing any content (finish_reason="length", empty body — z-ai/glm-5.3-flash
+# did exactly that, first at 512 tokens and again at 3000). "low" is percentage-based,
+# so OpenRouter normalises it across model families.
+ATTACHMENT_REASONING_EFFORT = ""
 
 SYSTEM_PROMPT_BASE = """\
 You are an assistant helping a Thai university administrator prioritize and annotate document signing.
@@ -120,26 +137,50 @@ def make_client(api_key: str, base_url: str = OPENROUTER_BASE_URL) -> openai.Ope
     return openai.OpenAI(api_key=api_key, base_url=base_url, max_retries=3)
 
 
-def _should_fallback(exc: BaseException) -> bool:
-    """True for transient failures worth retrying on the fallback model."""
+# Account-level 4xx: these fail identically on every model, so retrying the
+# fallback only burns a second round-trip.
+_ACCOUNT_ERROR_STATUSES = frozenset({401, 402, 403})
+
+
+def _should_fallback(exc: BaseException, *, on_client_error: bool = False) -> bool:
+    """True for failures worth retrying on the fallback model.
+
+    Transient failures (connection/timeout, 5xx, 429) always qualify. With
+    `on_client_error`, 4xx rejections qualify too — use it for calls where a 4xx
+    means "this model cannot do this" rather than "this request is malformed".
+    Handing a PDF file part to a text-only model is exactly that: the upstream
+    provider rejects it with 400/422 ("Input should be a valid string"), while a
+    PDF-capable fallback model succeeds on the byte-identical request.
+    Account-level 4xx (401/402/403) never qualify — see above."""
     if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
         return True
     if isinstance(exc, openai.APIStatusError):
-        return exc.status_code is None or exc.status_code >= 500 or exc.status_code == 429
+        code = exc.status_code
+        if code is None or code >= 500 or code == 429:
+            return True
+        return (
+            on_client_error
+            and 400 <= code < 500
+            and code not in _ACCOUNT_ERROR_STATUSES
+        )
     return False
 
 
 def _summarize_attachment_call(
     client: openai.OpenAI, pdf_b64: str, model: str, pdf_engine: str | None
-) -> str:
+) -> tuple[str, str | None, int | None]:
+    """Return (summary text, finish_reason, completion_tokens). The last two are
+    carried out so an empty summary can be logged with the reason it came back
+    empty — finish_reason="length" alongside a completion_tokens count at the cap
+    is the signature of reasoning tokens eating the whole budget."""
     # `plugins` is an OpenRouter-only field, so it rides along in extra_body.
     # Pinning the engine keeps PDF cost predictable: with no engine set,
     # OpenRouter bills per-page OCR for any model lacking native file input.
-    extra_body = (
-        {"plugins": [{"id": "file-parser", "pdf": {"engine": pdf_engine}}]}
-        if pdf_engine
-        else {}
-    )
+    extra_body: dict = {}
+    if pdf_engine:
+        extra_body["plugins"] = [{"id": "file-parser", "pdf": {"engine": pdf_engine}}]
+    if ATTACHMENT_REASONING_EFFORT:
+        extra_body["reasoning"] = {"effort": ATTACHMENT_REASONING_EFFORT}
     response = client.chat.completions.create(
         model=model,
         max_tokens=ATTACHMENT_MAX_TOKENS,
@@ -158,7 +199,9 @@ def _summarize_attachment_call(
             ],
         }],
     )
-    return (response.choices[0].message.content or "").strip()
+    choice = response.choices[0]
+    completion_tokens = getattr(response.usage, "completion_tokens", None)
+    return (choice.message.content or "").strip(), choice.finish_reason, completion_tokens
 
 
 def _summarize_attachment(
@@ -181,24 +224,53 @@ def _summarize_attachment(
         return None
 
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode()
+
+    def call(model_name: str) -> str:
+        text, finish_reason, completion_tokens = _summarize_attachment_call(
+            client, pdf_b64, model_name, pdf_engine
+        )
+        record_used(model_name)
+        if not text:
+            # A 200 carrying empty content is its own silent failure mode: some
+            # models accept the file part and then say nothing, and a reasoning
+            # model can spend the whole ATTACHMENT_MAX_TOKENS budget before
+            # emitting any content (finish_reason="length"). Log it — otherwise it
+            # vanishes into the caller's "attachment could not be read" line with
+            # nothing in the log to distinguish it from a rejected request.
+            logging.warning(
+                "Attachment summary %s empty on %s "
+                "(finish_reason=%s, completion_tokens=%s/%d, engine=%s)",
+                doc["data_id"], model_name, finish_reason, completion_tokens,
+                ATTACHMENT_MAX_TOKENS, pdf_engine or "openrouter-default",
+            )
+        return text
+
     on_status(f"{status_prefix} · {model}")
     try:
-        result = _summarize_attachment_call(client, pdf_b64, model, pdf_engine)
-        record_used(model)
-        return result
+        text = call(model)
+        if text:
+            return text
+        # An empty 200 is worth the fallback for the same reason a 4xx is: the
+        # request was fine, this particular model just produced nothing from it.
+        reason = "returned an empty summary"
     except Exception as e:
-        if not _should_fallback(e) or not fallback_model:
+        # on_client_error: a 400/422 here usually means the model has no file
+        # input, which the fallback model may well have.
+        if not _should_fallback(e, on_client_error=True):
             logging.warning("Attachment summary failed (no fallback): %s", e)
             return None
-        logging.warning("%s unavailable (%s); falling back to %s", model, e, fallback_model)
-        on_status(f"{status_prefix} · {fallback_model} ({model} unavailable)")
-        try:
-            result = _summarize_attachment_call(client, pdf_b64, fallback_model, pdf_engine)
-            record_used(fallback_model)
-            return result
-        except Exception as e2:
-            logging.warning("Fallback model %s also failed: %s", fallback_model, e2)
-            return None
+        reason = f"unavailable ({e})"
+
+    if not fallback_model:
+        logging.warning("%s %s; no fallback configured", model, reason)
+        return None
+    logging.warning("%s %s; falling back to %s", model, reason, fallback_model)
+    on_status(f"{status_prefix} · {fallback_model} ({model} unavailable)")
+    try:
+        return call(fallback_model) or None
+    except Exception as e2:
+        logging.warning("Fallback model %s also failed: %s", fallback_model, e2)
+        return None
 
 
 _GENERIC_ROUTING_STAMPS = {

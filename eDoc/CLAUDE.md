@@ -48,11 +48,39 @@ PASSWORD = os.getenv("EDOC_PASSWORD")
 - Model is chosen in `.env`, never in code: `EDOC_AI_MODEL` (default
   `anthropic/claude-haiku-4.5`), `EDOC_AI_FALLBACK_MODEL` (default
   `openai/gpt-4o-mini`, empty value disables), `EDOC_AI_MAX_TOKENS` (default 16000).
-- The fallback model is retried only on 5xx / 429 / connection errors.
-- `EDOC_AI_PDF_ENGINE` defaults to `native` and is sent as OpenRouter's
-  `plugins: [{id: "file-parser", ...}]` via `extra_body`. Keep it pinned: with no
-  engine set, OpenRouter silently bills per-page `mistral-ocr` for any model that
-  lacks native PDF input. `cloudflare-ai` is the free (text-only) alternative.
+- The fallback model is retried on 5xx / 429 / connection errors — plus, for
+  attachment summaries only, on a 4xx (`_should_fallback(..., on_client_error=True)`),
+  because a 400/422 there means the primary model has no file input, not a bad request.
+  Account-level 4xx (401/402/403) never fall back.
+- `EDOC_AI_PDF_ENGINE` is sent as OpenRouter's `plugins: [{id: "file-parser", ...}]`
+  via `extra_body`. Keep it pinned: with no engine set, OpenRouter silently bills
+  per-page `mistral-ocr` for any model that lacks native PDF input.
+  **Match the engine to the model** — `native` requires a model listing `file` among
+  its input modalities, and a text-only model fails either loudly (400/422 "Input
+  should be a valid string") or *silently* (200 with empty content). `.env` uses
+  `native` because both configured models are file-capable; switch it to
+  `cloudflare-ai` (free, but text-layer only — scans come back empty) or
+  `mistral-ocr` (paid per page) if `EDOC_AI_MODEL` becomes a text-only model.
+  Check a candidate model with OpenRouter's `/api/v1/models`: it needs **`file`** in
+  `architecture.input_modalities`, plus `image` to handle scanned pages. Beware
+  models that list `image` but not `file` (`z-ai/glm-*`, `deepseek/*`) — vision
+  alone does not make a model able to accept a PDF.
+- An attachment call that returns an empty 200 is logged as a WARNING with its
+  `finish_reason` and `completion_tokens`, since it otherwise looks identical to a
+  rejected request.
+- `ATTACHMENT_MAX_TOKENS` (in [edoc/analyzer.py](edoc/analyzer.py)) must leave room
+  for **reasoning** tokens: OpenRouter bills them as output tokens from the same
+  `max_tokens` pool, so a reasoning model on a small cap returns
+  `finish_reason="length"` with empty content. 512 did exactly that on
+  `z-ai/glm-5.3-flash`; it is now 3000. Don't shrink it back.
+- `ATTACHMENT_REASONING_EFFORT` bounds the reasoning half of that budget (sent as
+  OpenRouter's `reasoning: {effort}` in `extra_body`); raising the total alone is
+  whack-a-mole, since a dense document just reasons past the new cap too. It is `""`
+  (unset) while the configured models are non-reasoning — OpenRouter forwards
+  unrecognised params to the provider, so sending it to a non-reasoning model risks a
+  400 that the 4xx fallback would answer by rerouting every attachment to the pricier
+  fallback model. Set it to `"low"` when `EDOC_AI_MODEL` is a reasoning model.
+- An empty attachment summary now retries on the fallback model, same as a 4xx.
 - Do NOT re-add `response_format={"type": "json_object"}` — it is unsupported on
   some OpenRouter models and forbids the bare JSON array the prompt asks for; the
   fence-strip + `json_repair` pass in `analyze()` handles the raw text instead.
@@ -213,4 +241,7 @@ Respond in Thai. For each document, provide:
 ## Session Notes (Update After Each Session)
 | Date | Phase Completed | Notes |
 |------|----------------|-------|
+| 2026-09-10 | Model pair settled | `EDOC_AI_MODEL=openai/gpt-4o-mini`, `EDOC_AI_FALLBACK_MODEL=anthropic/claude-haiku-4.5`, `EDOC_AI_PDF_ENGINE=native`. Both models list `file` + `image` on OpenRouter, so each reads text *and* scanned PDFs directly, no OCR fee. Neither reasons by default, so `ATTACHMENT_REASONING_EFFORT` is back to `""`. gpt-4o-mini output is $0.60/MTok vs Haiku's $5.00. |
+| 2026-09-10 | Attachment summary fix | Real cause of "attachment could not be read" on `z-ai/glm-5.3-flash`: `ATTACHMENT_MAX_TOKENS = 512` was entirely consumed by reasoning tokens, so every call returned `finish_reason="length"` with empty content. Raised to 3000 → 18/19 docs summarised; the one holdout (30914458, a พ.ร.บ. nomination memo) ate 3000/3000, so reasoning is now bounded with `reasoning: {effort: "low"}` and an empty summary retries on the fallback model. PDF reading itself was never the problem for this model. |
+| 2026-09-10 | PDF engine fix | `EDOC_AI_PDF_ENGINE=native` + a text-only `EDOC_AI_MODEL` was the cause of "attachment could not be read": `deepseek/deepseek-v4.1-flash` returned 400/422, `z-ai/glm-5.3-flash` returned an empty 200. Switched `.env` to `cloudflare-ai`, made attachment summaries fall back on 4xx, and added a WARNING for empty 200s. Ranking-path fallback behaviour deliberately unchanged. |
 | 2026-09-10 | AI provider migration | Swapped Anthropic+OpenAI for OpenRouter (`openai` SDK + custom `base_url`). Model now chosen in `.env` via `EDOC_AI_MODEL`. Dropped `response_format`; pinned `EDOC_AI_PDF_ENGINE=native` to avoid OpenRouter's paid OCR default. Verified against a local OpenAI-protocol stub, not yet against live OpenRouter. |

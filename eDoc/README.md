@@ -55,21 +55,42 @@ All AI calls go through [OpenRouter](https://openrouter.ai), so the model is jus
 a slug in `.env` — no code change, one API key for every provider:
 
 ```dotenv
-EDOC_AI_MODEL=anthropic/claude-haiku-4.5      # default: cheap and fast
-# EDOC_AI_MODEL=anthropic/claude-sonnet-4.6   # best Thai reasoning
-# EDOC_AI_MODEL=google/gemini-2.5-flash       # cheapest large-context option
+EDOC_AI_MODEL=openai/gpt-4o-mini              # cheap, reads PDFs, no reasoning tokens
+# EDOC_AI_MODEL=anthropic/claude-haiku-4.5    # pricier, same properties
+# EDOC_AI_MODEL=google/gemini-2.5-flash       # best on scanned documents
 
-EDOC_AI_FALLBACK_MODEL=openai/gpt-4o-mini     # empty value = no fallback
+EDOC_AI_FALLBACK_MODEL=anthropic/claude-haiku-4.5   # empty value = no fallback
 EDOC_AI_MAX_TOKENS=16000                      # output cap per request
 EDOC_AI_PDF_ENGINE=native                     # how attachment PDFs are read
 ```
 
-The fallback model is used only when the primary one returns a 5xx, a 429, or a
-connection error — mid-run switches are printed and logged, and the run ends with
-a `Model usage:` line naming every model actually billed.
+The fallback model is used when the primary returns a 5xx, a 429, or a connection
+error. Attachment summaries additionally fall back on a 4xx or an empty response,
+because there a rejection usually means *this model can't read the PDF* rather than
+*the request was wrong* (401/402/403 never fall back — they fail on every model).
+Mid-run switches are printed and logged, and the run ends with a `Model usage:` line
+naming every model actually billed.
 
 `EDOC_AI_MAX_TOKENS` must stay within your model's output limit — OpenRouter
 rejects an over-large value rather than clamping it.
+
+#### Two traps when switching `EDOC_AI_MODEL`
+
+Both cost a full run to discover, so check them first:
+
+1. **`image` in the modality list is not `file`.** A model needs **`file`** in
+   `architecture.input_modalities` (see `https://openrouter.ai/api/v1/models`) to
+   accept a PDF at all, plus `image` to make sense of a *scanned* one. `z-ai/glm-*`
+   and `deepseek/*` list `image` but not `file`: with `native` they reject the request
+   with `400/422 "Input should be a valid string"`.
+2. **A reasoning model starves the summary.** Reasoning tokens are billed as output
+   tokens from the same `ATTACHMENT_MAX_TOKENS` budget, so a reasoning model can spend
+   the entire cap thinking and return `finish_reason="length"` with empty content — no
+   error, just a missing summary. If your model reasons by default, set
+   `ATTACHMENT_REASONING_EFFORT = "low"` in [edoc/analyzer.py](edoc/analyzer.py).
+
+Either way the log names the cause: look for `Attachment summary <id> empty on <model>`
+with its `finish_reason` and `completion_tokens`.
 
 ### Attachment PDFs and their cost
 
@@ -77,8 +98,8 @@ rejects an over-large value rather than clamping it.
 
 | Value | Behaviour | Cost |
 |-------|-----------|------|
-| `native` (default) | PDF handed straight to the model. Needs a model with `file` in its OpenRouter input modalities — otherwise the summary is skipped and ranking continues without it. | input tokens |
-| `cloudflare-ai` | OpenRouter converts the PDF to markdown first. Text-only, so scanned documents come back empty. | free |
+| `native` (default) | PDF handed straight to the model — the only engine that reads text *and* scanned pages. Needs a model with `file` in its OpenRouter input modalities; with any other model the request is rejected, the summary is skipped, and ranking continues without it. | input tokens |
+| `cloudflare-ai` | OpenRouter converts the PDF to markdown first. Works with any text model, but text-layer only, so scanned documents come back empty. | free |
 | `mistral-ocr` | Real OCR — the option to use if your attachments are scans. | per 1,000 pages, billed to OpenRouter |
 
 The default is pinned to `native` on purpose: with the value left empty,
