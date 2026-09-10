@@ -8,15 +8,20 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
-import anthropic
 import openai
 from json_repair import repair_json
 from pypdf import PdfReader, PdfWriter
 
-from edoc.config import DEFAULT_COMMAND
+from edoc.config import (
+    DEFAULT_AI_MAX_TOKENS,
+    DEFAULT_AI_MODEL,
+    DEFAULT_AI_PDF_ENGINE,
+    DEFAULT_COMMAND,
+    OPENROUTER_BASE_URL,
+)
 
 HISTORY_FILE = "signing_history.json"
-AI_MAX_TOKENS = 64000
+ATTACHMENT_MAX_TOKENS = 512
 
 SYSTEM_PROMPT_BASE = """\
 You are an assistant helping a Thai university administrator prioritize and annotate document signing.
@@ -107,41 +112,38 @@ def _slice_pdf_bytes(path: str, max_pages: int = 3) -> bytes:
     return buf.getvalue()
 
 
+def make_client(api_key: str, base_url: str = OPENROUTER_BASE_URL) -> openai.OpenAI:
+    """OpenRouter speaks the OpenAI chat-completions protocol, so the openai SDK
+    drives it with nothing but a different base_url. `api_key` is always passed
+    explicitly — left to itself the SDK would silently pick up OPENAI_API_KEY
+    from the environment and send the wrong credential to OpenRouter."""
+    return openai.OpenAI(api_key=api_key, base_url=base_url, max_retries=3)
+
+
 def _should_fallback(exc: BaseException) -> bool:
-    """True for transient Anthropic failures worth retrying on OpenAI."""
-    if isinstance(exc, (anthropic.APIConnectionError, anthropic.APITimeoutError)):
+    """True for transient failures worth retrying on the fallback model."""
+    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
         return True
-    if isinstance(exc, anthropic.APIStatusError):
-        return exc.status_code is None or exc.status_code >= 500
+    if isinstance(exc, openai.APIStatusError):
+        return exc.status_code is None or exc.status_code >= 500 or exc.status_code == 429
     return False
 
 
-def _summarize_attachment_anthropic(
-    client: anthropic.Anthropic, pdf_b64: str, model: str
+def _summarize_attachment_call(
+    client: openai.OpenAI, pdf_b64: str, model: str, pdf_engine: str | None
 ) -> str:
-    response = client.messages.create(
-        model=model,
-        max_tokens=512,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "document",
-                    "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64},
-                },
-                {"type": "text", "text": _ATTACHMENT_PROMPT},
-            ],
-        }],
+    # `plugins` is an OpenRouter-only field, so it rides along in extra_body.
+    # Pinning the engine keeps PDF cost predictable: with no engine set,
+    # OpenRouter bills per-page OCR for any model lacking native file input.
+    extra_body = (
+        {"plugins": [{"id": "file-parser", "pdf": {"engine": pdf_engine}}]}
+        if pdf_engine
+        else {}
     )
-    return response.content[0].text.strip()
-
-
-def _summarize_attachment_openai(
-    client: openai.OpenAI, pdf_b64: str, model: str
-) -> str:
     response = client.chat.completions.create(
         model=model,
-        max_tokens=512,
+        max_tokens=ATTACHMENT_MAX_TOKENS,
+        extra_body=extra_body,
         messages=[{
             "role": "user",
             "content": [
@@ -160,13 +162,13 @@ def _summarize_attachment_openai(
 
 
 def _summarize_attachment(
-    anth_client: anthropic.Anthropic,
-    oai_client: openai.OpenAI | None,
+    client: openai.OpenAI,
     doc: dict,
     model: str,
-    fallback_model: str,
+    fallback_model: str | None,
+    pdf_engine: str | None,
     on_status: Callable[[str], None],
-    record_used: Callable[[str, str], None],
+    record_used: Callable[[str], None],
     status_prefix: str,
 ) -> str | None:
     path = doc.get("attachment_path")
@@ -179,23 +181,23 @@ def _summarize_attachment(
         return None
 
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode()
-    on_status(f"{status_prefix} · anthropic {model}")
+    on_status(f"{status_prefix} · {model}")
     try:
-        result = _summarize_attachment_anthropic(anth_client, pdf_b64, model)
-        record_used("anthropic", model)
+        result = _summarize_attachment_call(client, pdf_b64, model, pdf_engine)
+        record_used(model)
         return result
     except Exception as e:
-        if not _should_fallback(e) or oai_client is None:
+        if not _should_fallback(e) or not fallback_model:
             logging.warning("Attachment summary failed (no fallback): %s", e)
             return None
-        logging.warning("Anthropic overload (%s); falling back to OpenAI %s", e, fallback_model)
-        on_status(f"{status_prefix} · openai {fallback_model} (anthropic overloaded)")
+        logging.warning("%s unavailable (%s); falling back to %s", model, e, fallback_model)
+        on_status(f"{status_prefix} · {fallback_model} ({model} unavailable)")
         try:
-            result = _summarize_attachment_openai(oai_client, pdf_b64, fallback_model)
-            record_used("openai", fallback_model)
+            result = _summarize_attachment_call(client, pdf_b64, fallback_model, pdf_engine)
+            record_used(fallback_model)
             return result
         except Exception as e2:
-            logging.warning("OpenAI fallback also failed: %s", e2)
+            logging.warning("Fallback model %s also failed: %s", fallback_model, e2)
             return None
 
 
@@ -275,69 +277,54 @@ def _build_user_prompt(docs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _rank_anthropic(
-    client: anthropic.Anthropic, system_prompt: str, user_prompt: str, model: str
+def _rank_call(
+    client: openai.OpenAI, system_prompt: str, user_prompt: str, model: str, max_tokens: int
 ) -> str:
-    with client.messages.stream(
-        model=model,
-        max_tokens=AI_MAX_TOKENS,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}],
-    ) as stream:
-        return stream.get_final_text().strip()
-
-
-def _rank_openai(
-    client: openai.OpenAI, system_prompt: str, user_prompt: str, model: str
-) -> str:
-    # OpenAI's json_object response_format requires an object root, so we wrap the
-    # array under "ranking" and unwrap before returning.
-    wrapped_system = system_prompt + (
-        '\n\nIMPORTANT: Return a JSON object with a single key "ranking" whose value is the array described above.'
-    )
+    # No response_format={"type": "json_object"} here: it is not supported across
+    # every OpenRouter model, and it forbids the bare JSON array the system prompt
+    # asks for. The caller's fence-strip + json_repair pass handles the raw text.
     response = client.chat.completions.create(
         model=model,
-        max_tokens=AI_MAX_TOKENS,
-        response_format={"type": "json_object"},
+        max_tokens=max_tokens,
         messages=[
-            {"role": "system", "content": wrapped_system},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
     )
-    raw = (response.choices[0].message.content or "").strip()
-    parsed = json.loads(raw)
-    if isinstance(parsed, dict) and "ranking" in parsed:
-        return json.dumps(parsed["ranking"], ensure_ascii=False)
-    return raw
+    return (response.choices[0].message.content or "").strip()
 
 
 def analyze(
     docs: list[dict],
-    model: str,
-    fallback_model: str = "gpt-4o-mini",
-    openai_api_key: str | None = None,
+    api_key: str,
+    model: str = DEFAULT_AI_MODEL,
+    fallback_model: str | None = None,
+    base_url: str = OPENROUTER_BASE_URL,
+    max_tokens: int = DEFAULT_AI_MAX_TOKENS,
+    pdf_engine: str | None = DEFAULT_AI_PDF_ENGINE,
     on_status: Callable[[str], None] | None = None,
 ) -> list[dict]:
-    """Send docs to Claude, return ranked list with rank/data_id/title/summary/reason/command.
-    Falls back to OpenAI (`fallback_model`) on Anthropic overload/5xx/connection errors when
-    `openai_api_key` is configured. The AI suggests `command` per document; falls back to
-    DEFAULT_COMMAND if omitted.
+    """Send docs to the model chosen in .env (via OpenRouter), return ranked list with
+    rank/data_id/title/summary/reason/command.
+    `model` and `fallback_model` are OpenRouter slugs (e.g. "anthropic/claude-haiku-4.5");
+    the fallback is retried on 5xx/429/connection errors and is skipped when falsy.
+    The AI suggests `command` per document; falls back to DEFAULT_COMMAND if omitted.
     `on_status(msg)` is invoked before each API call so callers (the CLI progress bar) can
-    show the provider+model actually in use, including mid-run fallbacks."""
+    show the model actually in use, including mid-run fallbacks."""
     history = load_history()
     logging.info(
-        "AI analysis: %d docs, %d history entries, model=%s, fallback=%s",
-        len(docs), len(history), model, fallback_model if openai_api_key else "disabled",
+        "AI analysis: %d docs, %d history entries, model=%s, fallback=%s, max_tokens=%d, pdf_engine=%s",
+        len(docs), len(history), model, fallback_model or "disabled", max_tokens,
+        pdf_engine or "openrouter-default",
     )
 
-    anth_client = anthropic.Anthropic(max_retries=3)
-    oai_client = openai.OpenAI(api_key=openai_api_key) if openai_api_key else None
+    client = make_client(api_key, base_url)
 
-    usage: Counter[tuple[str, str]] = Counter()
+    usage: Counter[str] = Counter()
     _status = on_status or (lambda _msg: None)
 
-    def _record(provider: str, used_model: str) -> None:
-        usage[(provider, used_model)] += 1
+    def _record(used_model: str) -> None:
+        usage[used_model] += 1
 
     # Summarize PDF attachments and enrich each doc before ranking
     docs_with_att = [d for d in docs if d.get("attachment_path")]
@@ -346,7 +333,7 @@ def analyze(
         for i, doc in enumerate(docs_with_att, 1):
             prefix = f"[cyan]Step 3/4 — Summarizing PDF {i}/{len(docs_with_att)}"
             summary = _summarize_attachment(
-                anth_client, oai_client, doc, model, fallback_model,
+                client, doc, model, fallback_model, pdf_engine,
                 _status, _record, prefix,
             )
             doc["attachment_summary"] = summary
@@ -361,21 +348,21 @@ def analyze(
     user_prompt = _build_user_prompt(docs)
 
     rank_prefix = f"[cyan]Step 4/4 — Ranking {len(docs)} docs"
-    _status(f"{rank_prefix} · anthropic {model}")
+    _status(f"{rank_prefix} · {model}")
     try:
-        raw = _rank_anthropic(anth_client, system_prompt, user_prompt, model)
-        _record("anthropic", model)
+        raw = _rank_call(client, system_prompt, user_prompt, model, max_tokens)
+        _record(model)
     except Exception as e:
-        if not _should_fallback(e) or oai_client is None:
+        if not _should_fallback(e) or not fallback_model:
             raise
-        logging.warning("Anthropic ranking overload (%s); falling back to OpenAI %s", e, fallback_model)
-        print(f"\n[!] Anthropic overloaded; retrying ranking on OpenAI {fallback_model}")
-        _status(f"{rank_prefix} · openai {fallback_model} (anthropic overloaded)")
-        raw = _rank_openai(oai_client, system_prompt, user_prompt, fallback_model)
-        _record("openai", fallback_model)
+        logging.warning("Ranking on %s failed (%s); falling back to %s", model, e, fallback_model)
+        print(f"\n[!] {model} unavailable; retrying ranking on {fallback_model}")
+        _status(f"{rank_prefix} · {fallback_model} ({model} unavailable)")
+        raw = _rank_call(client, system_prompt, user_prompt, fallback_model, max_tokens)
+        _record(fallback_model)
 
     logging.info("AI response received (%d chars)", len(raw))
-    usage_str = ", ".join(f"{p} {m} ×{n}" for (p, m), n in usage.most_common()) or "none"
+    usage_str = ", ".join(f"{m} ×{n}" for m, n in usage.most_common()) or "none"
     print(f"\nModel usage: {usage_str}")
     logging.info("Model usage: %s", usage_str)
 
@@ -408,7 +395,7 @@ def analyze(
     if len(suggested) != len(docs):
         logging.warning("AI returned %d of %d documents", len(suggested), len(docs))
 
-    # Re-attach fields that Claude doesn't echo back. "opinion" is computed
+    # Re-attach fields the model doesn't echo back. "opinion" is computed
     # deterministically (not by the AI) so it faithfully quotes what staff wrote.
     att_map = {d["data_id"]: d.get("attachment_path") for d in docs}
     opinion_map = {d["data_id"]: _extract_staff_opinion(d.get("notes", "")) for d in docs}

@@ -1,12 +1,13 @@
 # edoc — BUU eDoc CLI
 
 A command-line app to triage and sign documents on the BUU e-Document system
-(<https://doc.buu.ac.th/docweb>). It scrapes your inbox, ranks documents with Claude,
-writes a human-editable queue file, and signs only the documents you authorise.
+(<https://doc.buu.ac.th/docweb>). It scrapes your inbox, ranks documents with an LLM of
+your choice (via OpenRouter), writes a human-editable queue file, and signs only the
+documents you authorise.
 
 The flow is deliberately split in two so a human always reviews before any signing happens:
 
-1. **Fetch** — `edoc` logs in, reads every document, asks Claude to rank them, and
+1. **Fetch** — `edoc` logs in, reads every document, asks the model to rank them, and
    writes the result to [`documents.md`](#the-queue-file-documentsmd).
 2. **Review** — you open `documents.md` in your editor, mark anything you don't
    want signed as `skip`, then flip the queue gate from `PROVISIONAL` to `READY`.
@@ -41,12 +42,49 @@ Copy `.env.example` to `.env` and fill in:
 EDOC_USERNAME=your_buu_username
 EDOC_PASSWORD=your_buu_password
 INBOX="ผศ. ดร. ณยศ คุรุกิจโกศล"     # your shortcut name in ทางลัด
-ANTHROPIC_API_KEY=sk-ant-...
+OPENROUTER_API_KEY=sk-or-v1-...
 HEADLESS=false                       # default browser mode
 ```
 
 `HEADLESS` accepts `true`/`false`/`1`/`0`/`yes`/`no`. CLI flags `--headless`
 and `--headful` override it for a single run.
+
+### Choosing the model
+
+All AI calls go through [OpenRouter](https://openrouter.ai), so the model is just
+a slug in `.env` — no code change, one API key for every provider:
+
+```dotenv
+EDOC_AI_MODEL=anthropic/claude-haiku-4.5      # default: cheap and fast
+# EDOC_AI_MODEL=anthropic/claude-sonnet-4.6   # best Thai reasoning
+# EDOC_AI_MODEL=google/gemini-2.5-flash       # cheapest large-context option
+
+EDOC_AI_FALLBACK_MODEL=openai/gpt-4o-mini     # empty value = no fallback
+EDOC_AI_MAX_TOKENS=16000                      # output cap per request
+EDOC_AI_PDF_ENGINE=native                     # how attachment PDFs are read
+```
+
+The fallback model is used only when the primary one returns a 5xx, a 429, or a
+connection error — mid-run switches are printed and logged, and the run ends with
+a `Model usage:` line naming every model actually billed.
+
+`EDOC_AI_MAX_TOKENS` must stay within your model's output limit — OpenRouter
+rejects an over-large value rather than clamping it.
+
+### Attachment PDFs and their cost
+
+`EDOC_AI_PDF_ENGINE` controls how attachment PDFs reach the model:
+
+| Value | Behaviour | Cost |
+|-------|-----------|------|
+| `native` (default) | PDF handed straight to the model. Needs a model with `file` in its OpenRouter input modalities — otherwise the summary is skipped and ranking continues without it. | input tokens |
+| `cloudflare-ai` | OpenRouter converts the PDF to markdown first. Text-only, so scanned documents come back empty. | free |
+| `mistral-ocr` | Real OCR — the option to use if your attachments are scans. | per 1,000 pages, billed to OpenRouter |
+
+The default is pinned to `native` on purpose: with the value left empty,
+OpenRouter falls back to the *paid* `mistral-ocr` engine for any model without
+native PDF support, which is easy to trigger by accident just by switching
+`EDOC_AI_MODEL`.
 
 ---
 
@@ -164,11 +202,11 @@ While the gate is `PROVISIONAL`, fetch overwrites freely.
 |-------------------------------------|---------|---------|
 | `documents.md`                      | edoc    | Editable queue. Moved to `log/` after a real sign. |
 | `documents_data.json`               | edoc    | Raw scrape cache. Used by `--from-cache` and to attach notes to history. |
-| `signing_history.json`              | edoc    | Last 100 signed docs; fed to Claude as few-shot examples on next analysis. |
+| `signing_history.json`              | edoc    | Last 100 signed docs; fed to the model as few-shot examples on next analysis. |
 | `edoc_automation.log`               | edoc    | Timestamped action log (login, click, sign, error). |
 | `screenshots/`                      | edoc    | One PNG per major step (inbox, sign form before/after, error states). |
 | `log/documents_*.md`                | edoc    | Archived queue files from completed sign runs. |
-| `ai_response_raw.txt`               | edoc    | Only written when Claude's JSON fails to parse, for debugging. |
+| `ai_response_raw.txt`               | edoc    | Only written when the model's JSON fails to parse, for debugging. |
 
 `documents_data.json`, `signing_history.json`, and the screenshots folder
 should be in `.gitignore`. The credentials live in `.env` — never commit it.
@@ -182,7 +220,7 @@ Fetch:
 ```
 Step 1/3 — Logging in & navigating to inbox...
 Step 2/3 — Reading: ขอให้พิจารณา...   ━━━━━━━━━━━━━━━━━━ 100%  23/23 • 0:01:14 • 0:00:00
-Step 3/3 — Analyzing 23 documents with Claude  •  0:00:08
+Step 4/4 — Ranking 23 docs · anthropic/claude-haiku-4.5  •  0:00:08
 ✓ Wrote 23 documents → documents.md
 ```
 
@@ -246,14 +284,14 @@ eDoc/
 │   ├── config.py              ← .env loader + HEADLESS resolution
 │   ├── browser.py             ← login / iframe / sign-frame helpers
 │   ├── inbox.py               ← scrape inbox + read each doc
-│   ├── analyzer.py            ← Claude call + history bookkeeping
+│   ├── analyzer.py            ← OpenRouter call + history bookkeeping
 │   ├── signer.py              ← per-doc sign flow with retries
 │   ├── docfile.py             ← documents.md writer + parser
 │   └── log.py                 ← logging setup
 ├── phase1_login.py … phase5_sign.py  ← legacy standalone scripts (recon / fallback)
 ├── app.py                     ← FastAPI web UI (separate front-end, optional)
 ├── pyproject.toml             ← `[project.scripts] edoc = "edoc.cli:main"`
-├── .env / .env.example        ← credentials + HEADLESS
+├── .env / .env.example        ← credentials + model choice + HEADLESS
 ├── CLAUDE.md                  ← project notes for Claude Code
 └── README.md                  ← this file
 ```

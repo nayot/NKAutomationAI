@@ -41,6 +41,26 @@ PASSWORD = os.getenv("EDOC_PASSWORD")
 
 ---
 
+## AI Provider
+- All AI calls go through **OpenRouter** (`https://openrouter.ai/api/v1`) using the
+  `openai` SDK with a custom `base_url` — OpenRouter is OpenAI-protocol compatible.
+- One key: `OPENROUTER_API_KEY` (required).
+- Model is chosen in `.env`, never in code: `EDOC_AI_MODEL` (default
+  `anthropic/claude-haiku-4.5`), `EDOC_AI_FALLBACK_MODEL` (default
+  `openai/gpt-4o-mini`, empty value disables), `EDOC_AI_MAX_TOKENS` (default 16000).
+- The fallback model is retried only on 5xx / 429 / connection errors.
+- `EDOC_AI_PDF_ENGINE` defaults to `native` and is sent as OpenRouter's
+  `plugins: [{id: "file-parser", ...}]` via `extra_body`. Keep it pinned: with no
+  engine set, OpenRouter silently bills per-page `mistral-ocr` for any model that
+  lacks native PDF input. `cloudflare-ai` is the free (text-only) alternative.
+- Do NOT re-add `response_format={"type": "json_object"}` — it is unsupported on
+  some OpenRouter models and forbids the bare JSON array the prompt asks for; the
+  fence-strip + `json_repair` pass in `analyze()` handles the raw text instead.
+- Legacy `app.py` and `phase4_ai_analysis.py` still call the Anthropic SDK directly
+  and were intentionally left on it.
+
+---
+
 ## Workflow (Human Steps Being Automated)
 1. Navigate to https://doc.buu.ac.th/docweb
 2. Login with username and password
@@ -53,7 +73,7 @@ PASSWORD = os.getenv("EDOC_PASSWORD")
 1. Login and navigate to the inbox
 2. Collect all documents in the inbox (title, sender, date, preview)
 3. Read the content of each document
-4. Use AI (Claude) to analyze all documents and suggest a **signing order with reasoning**
+4. Use AI (any model, via OpenRouter) to analyze all documents and suggest a **signing order with reasoning**
 5. Present the suggested order to the user for review
 6. **Wait for explicit approval** before signing any document
 7. Upon approval, sign documents one by one in the approved order
@@ -89,8 +109,8 @@ PASSWORD = os.getenv("EDOC_PASSWORD")
 - Do NOT click "ลงนาม" at this stage
 
 ### Phase 5 — AI Analysis & Suggested Order
-- Pass all extracted document data to Claude API
-- Ask Claude to suggest a signing order based on urgency, sender, topic, and date
+- Pass all extracted document data to the model configured in `.env` (via OpenRouter)
+- Ask it to suggest a signing order based on urgency, sender, topic, and date
 - Print the suggested order with reasoning for each document
 - **Wait for user approval before proceeding**
 
@@ -147,7 +167,7 @@ eDoc/
 ├── phase1_login.py         ← Login + selector recon (Phases 1 & 2 combined)
 ├── phase2_inbox.py         ← Navigate to inbox via ทางลัด shortcut (Phase 3)
 ├── phase3_read_docs.py     ← Read all documents, save to JSON (Phase 4)
-├── phase4_ai_analysis.py   ← Claude API analysis + suggested order (Phase 5)
+├── phase4_ai_analysis.py   ← legacy analysis, still on the Anthropic SDK (Phase 5)
 ├── phase5_sign.py          ← Sign documents with approval gate (Phase 6)
 ├── documents_data.json     ← Extracted document content
 ├── edoc_automation.log     ← Action log
@@ -159,10 +179,10 @@ eDoc/
 ## AI Analysis Prompt (Phase 5)
 The AI also suggests the per-document `คำสั่งการ` (command), grounded in the few-shot
 history of past user-approved commands. Model is configurable via `EDOC_AI_MODEL` in `.env`
-(default: `claude-haiku-4-5-20251001`). Live system prompt lives in
+(default: `anthropic/claude-haiku-4.5`). Live system prompt lives in
 [edoc/analyzer.py](edoc/analyzer.py) — edit there, not here.
 
-When calling Claude API for document analysis, use this system prompt:
+When calling the model for document analysis, use this system prompt:
 
 ```
 You are an assistant helping a Thai university administrator prioritize document signing.
@@ -193,4 +213,4 @@ Respond in Thai. For each document, provide:
 ## Session Notes (Update After Each Session)
 | Date | Phase Completed | Notes |
 |------|----------------|-------|
-|      |                |       |
+| 2026-09-10 | AI provider migration | Swapped Anthropic+OpenAI for OpenRouter (`openai` SDK + custom `base_url`). Model now chosen in `.env` via `EDOC_AI_MODEL`. Dropped `response_format`; pinned `EDOC_AI_PDF_ENGINE=native` to avoid OpenRouter's paid OCR default. Verified against a local OpenAI-protocol stub, not yet against live OpenRouter. |

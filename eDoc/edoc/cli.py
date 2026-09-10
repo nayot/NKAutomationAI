@@ -141,15 +141,18 @@ async def _cmd_fetch(args: argparse.Namespace, config: Config) -> int:
         console=console,
     ) as ai_progress:
         task_id = ai_progress.add_task(
-            f"[cyan]Step 3–4/4 — Preparing analysis ({len(docs)} docs) · anthropic {config.ai_model}",
+            f"[cyan]Step 3–4/4 — Preparing analysis ({len(docs)} docs) · {config.ai_model}",
             total=None,
         )
         try:
             ranked = analyze(
                 docs,
+                api_key=config.openrouter_api_key,
                 model=config.ai_model,
                 fallback_model=config.ai_fallback_model,
-                openai_api_key=config.openai_api_key,
+                base_url=config.openrouter_base_url,
+                max_tokens=config.ai_max_tokens,
+                pdf_engine=config.ai_pdf_engine,
                 on_status=lambda msg: ai_progress.update(task_id, description=msg),
             )
         except AnalyzerError as e:
